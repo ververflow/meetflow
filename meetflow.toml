@@ -1,0 +1,72 @@
+# MeetFlow configuration — committed template (portable defaults).
+# Copy to `meetflow.local.toml` for machine-specific settings (absolute paths, my_name).
+# If `meetflow.local.toml` exists it overrides this file. *.local.toml is gitignored.
+
+[general]
+data_dir = "./data"            # On this Mac, local.toml points at ~/Library/Application Support/MeetFlow
+my_name = "Your Name"          # Used as the "me" speaker label in extraction
+language = "auto"              # "auto" = detect per meeting, or force "nl" / "en"
+
+[audio]
+sample_rate = 16000
+mic_device = "default"
+loopback_device = "default"    # Windows WASAPI loopback device; on macOS see [capture]
+max_duration_minutes = 120     # hard cap — a forgotten recording auto-stops + processes
+
+[capture]
+# System-audio ("them") capture. macOS uses a CoreAudio process-tap sidecar (Phase 4);
+# Windows uses the in-process WASAPI loopback. "auto" picks the per-platform default.
+backend = "auto"               # "auto" | "coreaudio" | "wasapi" | "off"
+# sidecar_path = ""            # macOS only: absolute path to the compiled `meetflow-capture`
+                               # binary; set in meetflow.local.toml. Empty → silent "them".
+aec = "auto"                   # mic echo-cancel. KEEP "auto" — "on" is BROKEN (4b): the sidecar's
+                               # dual mic+tap path writes "them" at 48k but reads 16k → 3x-long,
+                               # 0-transcript recordings. "auto" = mic via Python + tap-only sidecar
+                               # + software bleed-dedup (the proven path). "off" = no AEC either way.
+route_auto_detect = true       # (4b, not yet wired) detect speakers vs headphones to drive AEC
+tap_timeout = 15.0             # seconds to let the sidecar flush + exit on stop
+mute_behavior = "unmuted"      # the tap must NOT mute the call you are listening to
+
+[whisper]
+# Backend: "cli" = a dedicated whisper-cli process per meeting (default; does NOT block the
+# resident dictation whisper-server, and supports Silero VAD). "server" = POST to the resident
+# whisper.cpp server (short clips / fallback).
+backend = "cli"
+cli_path = "/opt/homebrew/bin/whisper-cli"
+model_path = ""                # set in local.toml, e.g. ~/.local/share/whisper-models/ggml-large-v3.bin
+server_url = "http://127.0.0.1:8771"   # used only by backend = "server"
+beam_size = 5
+best_of = 5
+no_speech_threshold = 0.50
+languages = ["nl", "en"]
+default_language = "auto"      # detected language is constrained to the list above
+# Silero VAD strips silence before the model sees it (kills silence-hallucinations).
+vad_enabled = true
+vad_model = ""                 # set in local.toml, e.g. ~/.local/share/whisper-models/ggml-silero-v6.2.0.bin
+vad_threshold = 0.5
+vad_min_speech_ms = 250
+vad_min_silence_ms = 100
+vad_max_speech_s = 30          # auto-split long monologues so memory stays bounded on hour-long meetings
+vad_speech_pad_ms = 200
+
+[whisper.context_prompts]
+nl = "Hé, even een update over het project. Kunnen we dat morgen bespreken?"
+en = "Hey, quick update on the project. Can we discuss this tomorrow?"
+
+[extraction]
+provider = "claude-code"       # "claude-code" (Claude CLI, no API key) or "ollama" (local)
+claude_model = "sonnet"        # quality over cost; haiku is cheaper but drifts more
+ollama_model = "qwen3:4b"
+ollama_url = "http://localhost:11434"
+
+[storage]
+archive_format = "opus"
+opus_bitrate = "48k"
+keep_wav = false               # opus keeps source channels (stereo me/them once Phase 4 lands)
+
+[privacy]
+auto_notify_reminder = true    # consent reminder at recording start (shown by Hammerspoon)
+retention_days = 365           # `meetflow cleanup` deletes meetings older than this (set per AVG/ROPA)
+
+# [crm] / [notion] — deliberately unused on this Mac: MeetFlow stays purely local, and the
+# client→recording matching is done by hand later. The crm.py code remains if ever wanted.
