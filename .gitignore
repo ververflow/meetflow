@@ -1,0 +1,35 @@
+# Local meeting archive — never commit (audio, transcripts, extractions)
+data/
+*.wav
+*.opus
+
+# Local config override (personal name, CRM paths, etc.)
+*.local.toml
+meetflow.local.toml
+
+# Local logs (may contain transcript snippets)
+*.log
+*.log.*
+
+# Python
+*.pyc
+__pycache__/
+.venv/
+*.egg-info/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets
+.env
+.env.*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Swift sidecar (Phase 4) build artifacts
+swift-sidecar/.build/
+swift-sidecar/MeetFlowCapture.app/
