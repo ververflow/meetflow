@@ -1,11 +1,22 @@
 # MeetFlow
 
-Personal meeting intelligence, fully local, on macOS (Apple Silicon). Press **Ctrl+Alt+M**
+Personal meeting intelligence on macOS (Apple Silicon). Press **Ctrl+Alt+M**
 to start recording, press again to stop. MeetFlow captures your mic + the call audio,
 transcribes with Whisper, extracts a structured summary (summary, action items, client
 needs) with Claude, and archives everything locally — full-text searchable.
 
-100% local. No cloud upload. No API keys (uses the authenticated Claude CLI).
+Audio never leaves your Mac: capture and Whisper transcription run fully locally, with no audio
+upload. The summary step sends the **transcript text** to Claude via the authenticated Claude CLI
+(no API key), so the conversation text is processed in the cloud while the audio is not.
+
+## Recording & privacy
+
+Record only conversations you take part in, and tell the other participants you are recording.
+Under Dutch law you may record a conversation you are a party to, but for any work or business use
+the GDPR/AVG applies: inform participants and have a lawful basis. Because the summary step sends
+the transcript to Claude (Anthropic), the conversation text leaves your machine for processing;
+for business use you also need a processor agreement with Anthropic. When recording starts MeetFlow
+beeps, shows a red menubar dot, and pops up an on-screen reminder to inform participants.
 
 Lives at `~/code/tools/meetflow` (one of Dani's self-built tools). Machine wiring — the
 launchd agent and the Hammerspoon trigger — lives in `~/macbook` (see "How it's wired").

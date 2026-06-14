@@ -13,6 +13,7 @@ import soundfile as sf
 from meetflow.capture.loopback import LoopbackStream
 from meetflow.capture.mic import MicStream
 from meetflow.config import Config
+from meetflow.notify import notify
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +51,7 @@ class Recorder:
 
         if self.config.privacy.auto_notify_reminder:
             log.info("HERINNERING: Meld aan de deelnemer dat dit gesprek wordt opgenomen.")
+            notify("Opname gestart", "Meld de deelnemer dat dit gesprek wordt opgenomen.")
 
         self.loopback.start()
         # The sidecar owns the mic only if it actually started; otherwise fall back to the
