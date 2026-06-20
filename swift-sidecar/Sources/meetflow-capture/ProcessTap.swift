@@ -199,6 +199,30 @@ private func defaultOutputDeviceUID() -> (AudioObjectID, String)? {
     return (devID, uid as String)
 }
 
+// Read a device's stream format on a given scope (input for what an IOProc receives).
+private func deviceStreamFormat(_ devID: AudioObjectID, scope: AudioObjectPropertyScope) -> AudioStreamBasicDescription? {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyStreamFormat,
+        mScope: scope,
+        mElement: kAudioObjectPropertyElementMain)
+    var asbd = AudioStreamBasicDescription()
+    var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+    let st = AudioObjectGetPropertyData(devID, &addr, 0, nil, &size, &asbd)
+    return st == noErr ? asbd : nil
+}
+
+// Fallback: a device's nominal sample rate (when the stream format read is unavailable).
+private func deviceNominalSampleRate(_ devID: AudioObjectID) -> Double? {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyNominalSampleRate,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var rate: Float64 = 0
+    var size = UInt32(MemoryLayout<Float64>.size)
+    let st = AudioObjectGetPropertyData(devID, &addr, 0, nil, &size, &rate)
+    return (st == noErr && rate > 0) ? rate : nil
+}
+
 // MARK: - ProcessTap
 
 final class ProcessTap {
@@ -280,6 +304,20 @@ final class ProcessTap {
         ]
         st = AudioHardwareCreateAggregateDevice(aggDesc as CFDictionary, &aggID)
         guard st == noErr, aggID != kAudioObjectUnknown else { throw CaptureError.aggregateCreate(st) }
+
+        // 3b) The IOProc reads from the AGGREGATE device, whose delivered rate can differ from
+        // the tap's advertised rate: when the mic is captured in the same process, Voice-
+        // Processing IO reconfigures the HAL graph so the aggregate runs at 16 kHz instead of
+        // 48 kHz. Trusting the tap rate here was the AEC "3x-too-long, 0-transcript" bug. Read
+        // the aggregate's ACTUAL input format and drive the ring/resampler/downmix from THAT.
+        if let aggFmt = deviceStreamFormat(aggID, scope: kAudioObjectPropertyScopeInput), aggFmt.mSampleRate > 0 {
+            nativeRate = aggFmt.mSampleRate
+            channelCount = max(1, Int(aggFmt.mChannelsPerFrame))
+            isInterleaved = (aggFmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved) == 0
+        } else if let r = deviceNominalSampleRate(aggID) {
+            nativeRate = r
+        }
+        logErr("aggregate input format: \(nativeRate) Hz, \(channelCount) ch, interleaved=\(isInterleaved)")
 
         // 4) Buffers + writer.
         ring = RingBuffer(capacity: Int(nativeRate) * 8)  // ~8s headroom

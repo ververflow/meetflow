@@ -48,6 +48,7 @@ vad_min_speech_ms = 250
 vad_min_silence_ms = 100
 vad_max_speech_s = 30          # auto-split long monologues so memory stays bounded on hour-long meetings
 vad_speech_pad_ms = 200
+glossary = []                  # proper nouns Whisper should prefer, e.g. ["Oer Sterk","Burg","HoutCalc","Dani Verver"]
 
 [whisper.context_prompts]
 nl = "Hé, even een update over het project. Kunnen we dat morgen bespreken?"
@@ -67,6 +68,31 @@ keep_wav = false               # opus keeps source channels (stereo me/them once
 [privacy]
 auto_notify_reminder = true    # consent reminder at recording start (shown by Hammerspoon)
 retention_days = 365           # `meetflow cleanup` deletes meetings older than this (set per AVG/ROPA)
+
+[calendar]
+# Opt-in Google Calendar enrichment via the local `gws` CLI. Read-only: matches a recording
+# to its calendar event to fill the real title, attendee names, and a client slug. Only event
+# metadata is read; recordings/transcripts never leave the machine.
+enabled = false                # turn on in meetflow.local.toml
+gws_path = "gws"
+calendar_id = "primary"
+match_tolerance_minutes = 20   # the hotkey start can lag the scheduled start; widen the overlap test
+lookback_minutes = 15
+lookahead_minutes = 15
+timeout_seconds = 12.0
+my_emails = []                 # your own addresses, excluded from "them"
+# [calendar.domain_slugs]      # attendee email domain -> client slug
+# "oersterk.nl" = "oersterk"
+
+[hygiene]
+# Auto-quarantine of test/junk recordings. Quarantine = tag + move to meetings/_quarantine/
+# (reversible). NEVER deletes.
+enabled = true
+min_duration_seconds = 120     # shorter recordings are quarantine candidates
+min_transcript_words = 15      # near-empty transcripts too
+quarantine_dirname = "_quarantine"
+quarantine_tag = "test"
+# test_phrases = ["hello hello test", "test test test"]
 
 # [crm] / [notion] — deliberately unused on this Mac: MeetFlow stays purely local, and the
 # client→recording matching is done by hand later. The crm.py code remains if ever wanted.

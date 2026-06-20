@@ -46,3 +46,36 @@ def test_load_config_from_toml():
 def test_load_config_missing_file():
     cfg = load_config(Path("/nonexistent/meetflow.toml"))
     assert cfg.audio.sample_rate == 16_000
+
+
+def test_template_has_calendar_hygiene_glossary():
+    toml_path = Path(__file__).parent.parent / "meetflow.toml"
+    cfg = load_config(toml_path)
+    # Calendar is opt-in (off in the committed template).
+    assert cfg.calendar.enabled is False
+    assert cfg.calendar.match_tolerance_minutes == 20
+    # Hygiene quarantine is on by default.
+    assert cfg.hygiene.enabled is True
+    assert cfg.hygiene.min_duration_seconds == 120
+    assert cfg.hygiene.quarantine_dirname == "_quarantine"
+    # Glossary is empty in the template (local users fill it).
+    assert cfg.whisper.glossary == []
+
+
+def test_calendar_hygiene_roundtrip(tmp_path):
+    p = tmp_path / "meetflow.toml"
+    p.write_text(
+        '[general]\nmy_name = "X"\n'
+        '[whisper]\nglossary = ["Oer Sterk", "Burg"]\n'
+        '[calendar]\nenabled = true\nmy_emails = ["a@b.com"]\n'
+        '[calendar.domain_slugs]\n"oersterk.nl" = "oersterk"\n'
+        '[hygiene]\nmin_duration_seconds = 90\ntest_phrases = ["foo"]\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(p)
+    assert cfg.whisper.glossary == ["Oer Sterk", "Burg"]
+    assert cfg.calendar.enabled is True
+    assert cfg.calendar.my_emails == ["a@b.com"]
+    assert cfg.calendar.domain_slugs == {"oersterk.nl": "oersterk"}
+    assert cfg.hygiene.min_duration_seconds == 90
+    assert cfg.hygiene.test_phrases == ["foo"]

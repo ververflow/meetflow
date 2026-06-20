@@ -68,6 +68,10 @@ class WhisperConfig:
         "nl": "Hé, even een update over het project. Kunnen we dat morgen bespreken?",
         "en": "Hey, quick update on the project. Can we discuss this tomorrow?",
     })
+    # Static proper nouns appended to the whisper --prompt so names/companies transcribe
+    # correctly (e.g. ["Oer Sterk", "Burg", "HoutCalc", "Dani Verver"]). Per-meeting names
+    # (calendar attendees, CRM contact) are layered on top at runtime; see engine.build_prompt.
+    glossary: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -101,11 +105,44 @@ class CRMConfig:
 
 
 @dataclass
+class CalendarConfig:
+    """Google Calendar enrichment via the local `gws` CLI. Read-only: only event metadata
+    (title, attendees, time) is read; recordings/transcripts never leave the machine."""
+
+    enabled: bool = False  # opt-in; off in the committed template
+    gws_path: str = "gws"  # resolved on PATH by default
+    calendar_id: str = "primary"
+    match_tolerance_minutes: int = 20  # the hotkey start may lag the scheduled start
+    lookback_minutes: int = 15  # query-window padding before the recording start
+    lookahead_minutes: int = 15  # and after the recording end
+    timeout_seconds: float = 12.0
+    my_emails: list[str] = field(default_factory=list)  # own addresses, excluded from "them"
+    domain_slugs: dict[str, str] = field(default_factory=dict)  # attendee email domain -> slug
+
+
+@dataclass
+class HygieneConfig:
+    """Auto-quarantine of test/junk recordings. Quarantine = tag + move (reversible); NEVER
+    deletes."""
+
+    enabled: bool = True
+    min_duration_seconds: int = 120  # shorter recordings are quarantine candidates
+    min_transcript_words: int = 15  # near-empty transcript => quarantine candidate
+    test_phrases: list[str] = field(
+        default_factory=lambda: ["hello hello test", "test test test", "een twee drie test"]
+    )
+    quarantine_dirname: str = "_quarantine"
+    quarantine_tag: str = "test"
+
+
+@dataclass
 class Config:
     data_dir: Path = field(default_factory=lambda: Path("./data"))
     my_name: str = ""
     language: str = "auto"  # "auto", "nl", "en", "de", etc.
     crm: CRMConfig = field(default_factory=CRMConfig)
+    calendar: CalendarConfig = field(default_factory=CalendarConfig)
+    hygiene: HygieneConfig = field(default_factory=HygieneConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     whisper: WhisperConfig = field(default_factory=WhisperConfig)
@@ -150,6 +187,12 @@ def load_config(path: Path | None = None) -> Config:
         my_name=general.get("my_name", ""),
         language=general.get("language", "auto"),
         crm=crm_config,
+        calendar=CalendarConfig(
+            **{k: v for k, v in raw.get("calendar", {}).items() if k in CalendarConfig.__dataclass_fields__}
+        ),
+        hygiene=HygieneConfig(
+            **{k: v for k, v in raw.get("hygiene", {}).items() if k in HygieneConfig.__dataclass_fields__}
+        ),
         audio=AudioConfig(**{k: v for k, v in raw.get("audio", {}).items() if k in AudioConfig.__dataclass_fields__}),
         capture=CaptureConfig(**{k: v for k, v in raw.get("capture", {}).items() if k in CaptureConfig.__dataclass_fields__}),
         whisper=WhisperConfig(**whisper_kwargs),

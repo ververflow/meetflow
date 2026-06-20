@@ -23,14 +23,15 @@ class Recorder:
 
     def __init__(self, config: Config):
         self.config = config
-        # Sidecar-owned mic (Voice-Processing AEC) is OPT-IN via [capture].aec = "on" and still
-        # being validated. By default the mic stays in Python (the reliable Phase-3 path) and the
-        # sidecar is used only for the system-audio tap ("them"). This keeps recording robust even
-        # if the tap is unavailable (it then degrades to a clean mic-only recording).
+        # AEC decision: "on" routes the mic through the sidecar's Voice-Processing path (clean
+        # "me" on speakers); "off" keeps the mic in Python (the reliable Phase-3 path) and uses
+        # the sidecar for the system-audio tap only. This degrades to a clean mic-only recording
+        # if the tap is unavailable.
+        self._resolved_aec = self._resolve_aec()
         self._mac_sidecar = (
             sys.platform == "darwin"
             and config.capture.backend in ("auto", "coreaudio")
-            and config.capture.aec == "on"
+            and self._resolved_aec == "on"
         )
         self.mic = MicStream(
             sample_rate=config.audio.sample_rate,
@@ -41,7 +42,28 @@ class Recorder:
             capture_config=config.capture,
             data_dir=config.data_dir,
             capture_mic=self._mac_sidecar,
+            resolved_aec=self._resolved_aec,
         )
+
+    def _resolve_aec(self) -> str:
+        """Resolve the effective AEC mode to "on" (dual mic+tap sidecar) or "off" (tap-only).
+
+        "auto" + route_auto_detect probes the sidecar for the output route and turns AEC on only
+        for built-in speakers. The probe SELF-GATES: with the current/older sidecar (no
+        --route-json) it returns None, so "auto" stays "off" (the proven tap-only path) until a
+        rebuilt sidecar is installed.
+        """
+        cfg = self.config.capture
+        if cfg.aec == "on":
+            return "on"
+        if cfg.aec == "off":
+            return "off"
+        if cfg.route_auto_detect and sys.platform == "darwin":
+            route = LoopbackStream.detect_route(cfg.sidecar_path)
+            if route and route.get("wantsAEC"):
+                log.info("route_auto_detect: %s -> AEC on", route.get("route"))
+                return "on"
+        return "off"
         self._using_sidecar_mic = False
         self._start_time: float | None = None
 

@@ -46,6 +46,14 @@ if CommandLine.arguments.contains("--probe-route") {
     exit(0)
 }
 
+// Machine-readable route for the Python recorder to drive `aec = "auto"` (route_auto_detect).
+// No capture, no permission. Prints one line of JSON to stdout.
+if CommandLine.arguments.contains("--route-json") {
+    let route = Route.detect()
+    print("{\"route\":\"\(route.rawValue)\",\"wantsAEC\":\(route.wantsAEC)}")
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--request-permission") {
     logErr("audio-capture permission before request: \(AudioCapturePermission.statusString())")
     let granted = AudioCapturePermission.request()

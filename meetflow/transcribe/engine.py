@@ -70,6 +70,42 @@ def _resolve_label(detected: str | None, language: str | None, allowed: list[str
     return code if code in allowed else allowed[0]
 
 
+# Per-meeting proper-noun vocabulary, set by the pipeline before transcription and cleared
+# after (so it never leaks into the next meeting via the module-global backend).
+_MEETING_VOCAB: list[str] = []
+_PROMPT_CHAR_BUDGET = 700  # keep the combined --prompt well under large-v3's ~224-token cap
+
+
+def set_meeting_vocab(terms: list[str] | None) -> None:
+    """Set the per-meeting proper-noun vocab appended to the whisper prompt. Clear with []."""
+    global _MEETING_VOCAB
+    _MEETING_VOCAB = [t.strip() for t in (terms or []) if t and t.strip()]
+
+
+def build_prompt(config: WhisperConfig, language: str | None, vocab: list[str] | None = None) -> str:
+    """Build the whisper --prompt: base context hint + proper-noun vocabulary.
+
+    Vocabulary = config.glossary (static) plus per-meeting names (calendar attendees, CRM
+    contact). Trims from the end of the vocab list if the combined prompt exceeds the budget,
+    so the static glossary and the earliest (most relevant) names survive.
+    """
+    base = config.context_prompts.get(language) or config.context_prompts.get("nl", "")
+    extra = vocab if vocab is not None else _MEETING_VOCAB
+    terms = list(dict.fromkeys(list(getattr(config, "glossary", []) or []) + list(extra)))
+    if not terms:
+        return base
+
+    def _combine(ts: list[str]) -> str:
+        vocab_str = ("Eigennamen: " + ", ".join(ts) + ".") if ts else ""
+        return (base + " " + vocab_str).strip() if base else vocab_str
+
+    combined = _combine(terms)
+    while terms and len(combined) > _PROMPT_CHAR_BUDGET:
+        terms.pop()
+        combined = _combine(terms)
+    return combined
+
+
 # ─── server backend (HTTP /inference) ──────────────────────────────────────────
 
 
@@ -93,7 +129,7 @@ class _ServerBackend:
         if self.url is None:
             self.ensure_ready(config)
         data = {"response_format": "verbose_json", "temperature": "0.0", "language": language or "auto"}
-        prompt = config.context_prompts.get(language) or config.context_prompts.get("nl", "")
+        prompt = build_prompt(config, language)
         if prompt:
             data["prompt"] = prompt
         files = {"file": ("channel.wav", _audio_to_wav_bytes(audio), "audio/wav")}
@@ -155,7 +191,7 @@ class _CliBackend:
             "-oj", "-ojf",
             "-of", str(out_base),
         ]
-        prompt = config.context_prompts.get(language) or config.context_prompts.get("nl", "")
+        prompt = build_prompt(config, language)
         if prompt:
             cmd += ["--prompt", prompt]
         if getattr(config, "vad_enabled", True):

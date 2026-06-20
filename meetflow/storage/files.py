@@ -21,20 +21,30 @@ def _meeting_title(json_path: str | None, fallback: str) -> str:
     return data.get("meeting_title") or (data.get("extraction") or {}).get("meeting_title") or fallback
 
 
-def generate_index(meetings: list[dict], meetings_root: Path) -> Path:
+def generate_index(meetings: list[dict], meetings_root: Path, quarantine_dirname: str = "_quarantine") -> Path:
     """Write INDEX.md — a reverse-chronological, scannable overview of all meetings.
 
     Pure derived data (from the DB + each meeting.json), so it is always safe to rebuild.
+    Quarantined meetings (folder under `quarantine_dirname`) are excluded from the table but
+    counted in the footer so nothing is silently hidden.
     """
+    listed, quarantined = [], 0
+    for m in meetings:
+        jp = m.get("json_path") or ""
+        if jp and quarantine_dirname in Path(jp).parts:
+            quarantined += 1
+        else:
+            listed.append(m)
+
     lines = [
         "# MeetFlow — meetings",
         "",
-        f"_{len(meetings)} meetings · auto-generated, rebuild with `meetflow index`._",
+        f"_{len(listed)} meetings · auto-generated, rebuild with `meetflow index`._",
         "",
         "| Datum | Titel | Duur | Open acties | Map |",
         "|---|---|---|---:|---|",
     ]
-    for m in meetings:
+    for m in listed:
         mid = m["id"]
         dur = m.get("duration_seconds") or 0
         title = _meeting_title(m.get("json_path"), m.get("summary") or "").strip().replace("\n", " ")
@@ -43,11 +53,14 @@ def generate_index(meetings: list[dict], meetings_root: Path) -> Path:
         open_a = m.get("open_actions") or 0
         lines.append(f"| {m.get('date', '')} | {title or '—'} | {dur // 60}m | {open_a} | [`{mid}`]({mid}/) |")
     lines.append("")
+    if quarantined:
+        lines.append(f"_{quarantined} in quarantaine (zie `{quarantine_dirname}/`)._")
+        lines.append("")
 
     meetings_root.mkdir(parents=True, exist_ok=True)
     index_path = meetings_root / "INDEX.md"
     index_path.write_text("\n".join(lines), encoding="utf-8")
-    log.info("Wrote INDEX.md (%d meetings)", len(meetings))
+    log.info("Wrote INDEX.md (%d meetings, %d quarantined)", len(listed), quarantined)
     return index_path
 
 
@@ -106,7 +119,7 @@ def save_meeting_markdown(meeting: Meeting, meeting_dir: Path) -> Path:
         lines.append("## Quotes")
         for q in meeting.extraction.quotes:
             speaker = me_name if q.speaker == "me" else them_name
-            lines.append(f'> "{q.text}" — {speaker}')
+            lines.append(f'> "{q.text}" ({speaker})')
             if q.context:
                 lines.append(f"> *Context: {q.context}*")
             lines.append("")

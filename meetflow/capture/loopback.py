@@ -37,13 +37,16 @@ class LoopbackStream:
     """Captures system audio output at 16kHz mono. Empty channel on macOS until the tap lands."""
 
     def __init__(self, sample_rate: int = 16_000, capture_config=None, data_dir: Path | None = None,
-                 capture_mic: bool = False):
+                 capture_mic: bool = False, resolved_aec: str | None = None):
         self.sample_rate = sample_rate
         self._capture_config = capture_config
         self._data_dir = data_dir
         # On macOS the sidecar can also capture the (AEC-cleaned) mic, so "me" and "them"
         # share one process and stay aligned. When True, mic_audio holds "me" after stop().
         self._capture_mic = capture_mic
+        # The concrete AEC decision ("on"/"off") the recorder resolved (route-aware). When set,
+        # it is passed to the sidecar verbatim instead of the raw config "auto".
+        self._resolved_aec = resolved_aec
         self.mic_audio: np.ndarray | None = None
         self._frames: list[np.ndarray] = []
         self._lock = threading.Lock()
@@ -181,7 +184,7 @@ class LoopbackStream:
         args = ["--out", str(self._tap_wav), "--sample-rate", str(self.sample_rate)]
         if self._capture_mic:
             self._mic_wav = self._tap_dir / "me.wav"
-            aec = cfg.aec if cfg else "auto"
+            aec = self._resolved_aec or (cfg.aec if cfg else "auto")
             args += ["--mic-out", str(self._mic_wav), "--aec", aec]
         try:
             self._tap_dir.mkdir(parents=True, exist_ok=True)
@@ -203,6 +206,35 @@ class LoopbackStream:
             return
         self._active = True
         log.info("CoreAudio tap started (pid=%d) → %s", self._sidecar_pid, self._tap_wav)
+
+    @staticmethod
+    def detect_route(sidecar_path: str, timeout: float = 5.0) -> dict | None:
+        """Probe the sidecar for the current output route (no capture, no TCC needed).
+
+        Returns {"route": str, "wantsAEC": bool} or None when unavailable. Runs the inner
+        binary directly with --route-json. SELF-GATING: an older sidecar without --route-json
+        exits non-zero / prints nothing, so this returns None and the caller keeps the proven
+        tap-only path until a rebuilt sidecar is installed.
+        """
+        import json
+        import subprocess
+
+        app = LoopbackStream._app_bundle(sidecar_path)
+        if not app:
+            return None
+        inner = Path(app) / "Contents" / "MacOS" / "MeetFlowCapture"
+        binary = str(inner) if inner.exists() else app
+        try:
+            proc = subprocess.run([binary, "--route-json"], capture_output=True, text=True, timeout=timeout)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0 or not proc.stdout:
+            return None
+        try:
+            data = json.loads(proc.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return None
+        return data if isinstance(data, dict) and "wantsAEC" in data else None
 
     @staticmethod
     def _app_bundle(path: str) -> str:

@@ -176,23 +176,54 @@ Key design notes for anyone modifying this:
   fixed (see Remaining work).
 - Cross-channel dedup is good but not perfect: with heavy speaker bleed an occasional duplicate/
   mis-attributed line can survive in the transcript. Quiet tap audio is intentionally kept-both.
-- `client_slug` data hygiene: an untagged meeting can end up with a slug derived from the time
-  (e.g. the Burg call shows `client_slug = "110000"`). Cosmetic; revisit with `meetflow tag`.
+- `client_slug` data hygiene: FIXED 2026-06-20. The timestamp-slug bug is gone (the `process`
+  command no longer derives a slug from the folder time); untagged meetings are `unknown` unless
+  calendar enrichment supplies a slug. The DB column is the source of truth; correct with
+  `meetflow tag`.
 - Transcription is NL + EN by default; add codes to `[whisper].languages`.
+
+## Accuracy + enrichment (2026-06-20)
+
+Reflecting on the first 8 real meetings drove an accuracy/enrichment pass (all Python, tests green):
+- **Google Calendar enrichment** (`integrations/calendar.py`, opt-in `[calendar]`): matches a
+  recording to its overlapping calendar event via the local `gws` CLI (read-only) and fills the
+  real meeting title, the "them" name (from attendees), and a client slug. Degrades to None on any
+  failure. Wired into `_run_pipeline` before transcription (title/them/slug + extraction context).
+- **Whisper proper-noun vocabulary** (`engine.build_prompt`/`set_meeting_vocab`, `[whisper].glossary`):
+  appends known names/companies (glossary + calendar attendees + CRM contact) to the whisper
+  `--prompt` so "Oer Sterk"/"Burg"/"HoutCalc" transcribe correctly. Cleared per run.
+- **client_slug hygiene**: the timestamp-slug bug is gone; the DB `client_slug` column is the single
+  source of truth. `delete`/`export` resolve folders via DB `json_path` (not a name suffix); `tag`
+  no longer rewrites the id.
+- **Junk/test auto-quarantine** (`storage/quarantine.py`, `[hygiene]`): short/near-empty/"test"
+  recordings are tagged and moved to `meetings/_quarantine/` (reversible, NEVER deleted) and excluded
+  from INDEX.md (with a footer count).
+- **`meetflow doctor`** (preflight) and **`meetflow backfill`** (re-extract titles + repair old
+  Windows mojibake + reconcile slug for old recordings) commands.
+- House style: em/en dashes normalized to plain hyphens in generated notes + calendar titles.
 
 ## Remaining work (deferred — pick up next session)
 
-1. **Fix the AEC sample-rate bug** so `aec = "on"` works → clean separation WITHOUT headphones
-   (Dani records on speakers). The tap "them" channel is written 48 kHz but read as 16 kHz in the
-   dual mic+tap path → 3× duration, 0 transcript (see Phase 4b above, meeting 1806). Highest-value
-   open item: it's the difference between "usable with minor echo" and "perfectly clean on speakers".
-2. **Output-route auto-detect** (`route_auto_detect`): wire speakers-vs-headphones detection to
-   drive AEC automatically. Code reads the flag but nothing consumes it.
-3. **`meetflow doctor`** preflight: sidecar `.app` present + grant held? models on disk? cli paths
-   valid? daemon loaded? One command to confirm green before a real call.
-4. **Clean up the legacy daily-path code** now unused on macOS: `listen`/`hotkey.py`/`tray.py`
+1. **AEC sample-rate fix — DONE + LIVE 2026-06-20.** Root cause: the resampler used the tap's
+   advertised 48 kHz, but the IOProc reads from the AGGREGATE device, which VPIO (dual mic+tap)
+   reconfigures to 16 kHz → the 3× bug. Fix in `ProcessTap.start()`: read the aggregate device's
+   ACTUAL input stream format and drive the ring/resampler/downmix from that (`deviceStreamFormat`).
+   Built + signed via `build.sh` with the stable "MeetFlow Local Signing" identity (grant survived).
+   Proven on-box with `verify-tap.sh`: `them.wav` = 7.58s for ~7.6s wall-clock (1:1, NOT 3×), me/them
+   aligned. Both TCC grants confirmed present (`kTCCServiceAudioCapture` + `kTCCServiceMicrophone` =
+   2). Only un-exercised bit: a clean "me" on a REAL call with actual voice (AEC cancels speaker
+   audio, so it can't be tested without talking).
+2. **Output-route auto-detect — DONE + LIVE 2026-06-20.** `recorder._resolve_aec()` probes the
+   sidecar (`meetflow-capture --route-json`, added to `main.swift`) and turns AEC on only for
+   built-in speakers. Self-gating (older sidecar without `--route-json` → stays tap-only). With the
+   rebuilt sidecar the daemon now logs `route_auto_detect: builtInSpeakers -> AEC on`, so `aec =
+   "auto"` uses the dual VPIO path on speakers. Restart the daemon after a route change (the probe
+   runs in `Recorder.__init__` at daemon start).
+3. **Clean up the legacy daily-path code** now unused on macOS: `listen`/`hotkey.py`/`tray.py`
    (pynput/pystray) and the Windows `uninstall` wording. Eliminate-before-automate.
-5. **`client_slug` hygiene** (see Known limits) — stop deriving a slug from the timestamp.
+
+Done 2026-06-20: AEC fix (live), route auto-detect (live), `meetflow doctor`, `client_slug` hygiene,
+calendar enrichment, whisper glossary, junk quarantine, backfill.
 
 ## V2 roadmap (not built)
 

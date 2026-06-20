@@ -46,12 +46,7 @@ def _timed(label: str):
     log.info("[time] %s: %.2fs", label, elapsed)
 
 
-def _sanitize_slug(slug: str) -> str:
-    """Sanitize a client slug — only lowercase alphanumeric and hyphens."""
-    import re
-    clean = re.sub(r"[^a-z0-9-]", "-", slug.lower().strip())
-    clean = re.sub(r"-+", "-", clean).strip("-")
-    return clean[:50] if clean else "unknown"
+from meetflow.text import sanitize_slug as _sanitize_slug  # noqa: E402 (re-export for back-compat)
 
 
 def _rebuild_index(config) -> Path:
@@ -62,7 +57,7 @@ def _rebuild_index(config) -> Path:
     db = MeetingDB(config.data_dir / "meetflow.db")
     meetings = db.list_meetings()
     db.close()
-    return generate_index(meetings, config.data_dir / "meetings")
+    return generate_index(meetings, config.data_dir / "meetings", config.hygiene.quarantine_dirname)
 
 
 # Global recorder state (module-level for signal handling)
@@ -273,31 +268,19 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
             _echo("Loading Whisper model...")
             load_model(config.whisper)
 
-    # 2. Transcribe with diarization
-    _echo("Transcribing...")
-    with _timed("transcribe"):
-        diarized = transcribe_stereo(wav_path, config.whisper)
-    if not diarized:
-        _echo("No speech detected in recording.")
-        return None
-
-    _echo(f"  {len(diarized)} segments transcribed")
-
-    # 3. Determine meeting metadata
+    # 2. Meeting metadata from the folder name (no transcript dependency), so the calendar
+    #    lookup + Whisper vocabulary can run BEFORE transcription.
     slug = _sanitize_slug(client_slug) if client_slug else "unknown"
-
-    # Parse date/time from directory name (format: YYYY-MM-DD_HHMMSS)
     dir_name = wav_path.parent.name
     parts = dir_name.split("_")
     date_str = parts[0] if len(parts) >= 1 else datetime.now().strftime("%Y-%m-%d")
     time_str = parts[1] if len(parts) >= 2 else "000000"
     meeting_id = dir_name  # e.g. "2026-04-13_143000"
 
-    # Duration from audio
     import soundfile as sf
 
     info = sf.info(str(wav_path))
-    # Start/end time
+    duration_seconds = int(info.duration)
     if len(time_str) == 6:  # legacy HHMMSS folders
         start_time = f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}"
     elif len(time_str) == 4:  # current HHMM folders
@@ -306,22 +289,56 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
         start_time = "00:00:00"
     try:
         start_dt = datetime.strptime(f"{date_str} {start_time}", "%Y-%m-%d %H:%M:%S")
-        end_dt = start_dt + timedelta(seconds=int(info.duration))
-        end_time = end_dt.strftime("%H:%M:%S")
+        end_time = (start_dt + timedelta(seconds=duration_seconds)).strftime("%H:%M:%S")
     except ValueError:
         end_time = ""
+
+    # 3. Calendar enrichment (read-only; degrades to None). Upgrades an "unknown" slug.
+    from meetflow.integrations.calendar import find_event, get_calendar_context
+    from meetflow.integrations.crm import get_client_context, read_profile
+
+    cal_match = find_event(config.calendar, date_str, start_time, duration_seconds)
+    if slug == "unknown" and cal_match and cal_match.slug_hint:
+        slug = cal_match.slug_hint
+        _echo(f"  client from calendar: {slug}")
+
+    # 4. Whisper proper-noun vocabulary (calendar attendees + CRM contact + static glossary).
+    profile = read_profile(config.crm, slug) if slug != "unknown" else None
+    vocab = list(cal_match.them_names) if cal_match else []
+    if profile:
+        contact = profile.get("contact", {})
+        nm = contact.get("naam") or contact.get("name")
+        if nm:
+            vocab.append(nm)
+    from meetflow.transcribe.engine import set_meeting_vocab
+
+    set_meeting_vocab(vocab)
+
+    # 5. Transcribe with diarization (vocab is now in the whisper prompt).
+    _echo("Transcribing...")
+    try:
+        with _timed("transcribe"):
+            diarized = transcribe_stereo(wav_path, config.whisper)
+    finally:
+        set_meeting_vocab([])  # never leak vocab into the next meeting
+    if not diarized:
+        _echo("No speech detected in recording.")
+        return None
+
+    _echo(f"  {len(diarized)} segments transcribed")
 
     # Detect primary language
     languages = [s.language for s in diarized]
     primary_lang = max(set(languages), key=languages.count) if languages else "nl"
 
-    # 4. Extract structured data via Claude Code CLI
+    # 6. Extract structured data via Claude Code CLI
     from meetflow.extract.llm import extract_meeting_data
-    from meetflow.integrations.crm import get_client_context
 
     from concurrent.futures import Future, ThreadPoolExecutor
 
-    client_context = get_client_context(config.crm, slug) if slug != "unknown" else ""
+    crm_context = get_client_context(config.crm, slug) if slug != "unknown" else ""
+    cal_context = get_calendar_context(config.calendar, cal_match)
+    client_context = "\n".join(p for p in (cal_context, crm_context) if p)
     segments_for_llm = [{"speaker": s.speaker, "start": s.start, "end": s.end, "text": s.text} for s in diarized]
 
     # Start opus encoding in background (independent of extraction)
@@ -342,28 +359,29 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
     meeting = Meeting(
         id=meeting_id,
         client_slug=slug,
-        meeting_title=extraction.meeting_title,
+        meeting_title=(cal_match.title if cal_match and cal_match.title else extraction.meeting_title),
         date=date_str,
         start_time=start_time,
         end_time=end_time,
-        duration_seconds=int(info.duration),
+        duration_seconds=duration_seconds,
         language=primary_lang,
         participants=Participants(me=config.my_name),
         transcript=[TranscriptSegment(speaker=s.speaker, start=s.start, end=s.end, text=s.text) for s in diarized],
         extraction=extraction,
     )
 
-    # Get contact name from CRM if available, then fallback to LLM extraction
-    from meetflow.integrations.crm import read_profile
-
-    profile = read_profile(config.crm, slug)
+    # Resolve "them": CRM contact > real calendar attendee > LLM extraction > calendar hint.
+    them = ""
     if profile:
         contact = profile.get("contact", {})
-        name = contact.get("naam") or contact.get("name")
-        if name:
-            meeting.participants.them = name
-    if not meeting.participants.them and extraction.them_name:
-        meeting.participants.them = extraction.them_name
+        them = contact.get("naam") or contact.get("name") or ""
+    if not them and cal_match and cal_match.has_real_attendees and cal_match.them_names:
+        them = cal_match.them_names[0]
+    if not them and extraction.them_name:
+        them = extraction.them_name
+    if not them and cal_match and cal_match.them_names:
+        them = cal_match.them_names[0]
+    meeting.participants.them = them
 
     # Collect opus result (blocks if still encoding)
     opus_path = None
@@ -383,7 +401,25 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
         json_path = save_meeting_json(meeting, meeting_dir)
         save_meeting_markdown(meeting, meeting_dir)
 
-    # 9. Index in database
+    # 8. Quarantine test/junk recordings (tag + move under _quarantine/; NEVER delete).
+    from meetflow.storage.quarantine import is_junk, quarantine_meeting
+
+    junk, junk_reason = is_junk(meeting, config.hygiene)
+    if junk:
+        _echo(f"  quarantined (test/junk): {junk_reason}")
+        if config.hygiene.quarantine_tag not in meeting.tags:
+            meeting.tags.append(config.hygiene.quarantine_tag)
+        save_meeting_json(meeting, meeting_dir)  # rewrite with the tag before the move
+        try:
+            meeting_dir = quarantine_meeting(meeting_dir, config.data_dir, config.hygiene)
+            json_path = meeting_dir / "meeting.json"
+            if opus_path:
+                opus_path = meeting_dir / opus_path.name
+        except Exception:
+            log.warning("Quarantine move failed", exc_info=True)
+
+    # 9. Index in database (json_path/opus_path already point at the quarantine dir if moved,
+    #    so the rebuilt INDEX.md self-excludes it).
     with _timed("db_index"):
         db = MeetingDB(config.data_dir / "meetflow.db")
         db.index_meeting(meeting, str(json_path), str(opus_path) if opus_path else None)
@@ -395,8 +431,8 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
     except Exception:
         log.warning("Index rebuild failed", exc_info=True)
 
-    # 10. Update CRM (non-blocking — fire and forget)
-    if slug != "unknown":
+    # 10. Update CRM (non-blocking — fire and forget). Skip quarantined/junk meetings.
+    if slug != "unknown" and not junk:
         ThreadPoolExecutor(max_workers=1).submit(
             update_profile_with_meeting, config.crm, meeting, config.my_name
         )
@@ -430,13 +466,9 @@ def process(ctx: click.Context, wav_path: str, client_slug: str | None) -> None:
     """Process an existing WAV recording through the pipeline."""
     config = ctx.obj["config"]
     path = Path(wav_path)
-
-    # Infer client slug from directory name if not provided
-    if client_slug is None and "_" in path.parent.name:
-        parts = path.parent.name.split("_", 1)
-        if len(parts) > 1:
-            client_slug = parts[1]
-
+    # Do NOT infer a slug from the folder name: folders are "YYYY-MM-DD_HHMM", so the old
+    # split("_") took the TIME as the slug (the "110000" bug). Leave it None -> "unknown",
+    # which calendar enrichment can still upgrade to a real client slug.
     _run_pipeline(path, config, client_slug)
 
 
@@ -530,9 +562,9 @@ def tag(ctx: click.Context, meeting_dir: str, client_slug: str) -> None:
     from meetflow.storage.database import MeetingDB
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    old_id = data["id"]
     data["client_slug"] = client_slug
-    data["id"] = f"{meeting_path.name}_{client_slug}"
+    # Keep id == folder name. The DB client_slug column is the single source of truth; the
+    # slug is never encoded into the id or folder name (so delete/export stay consistent).
 
     # Get contact name from CRM
     profile = read_profile(config.crm, client_slug)
@@ -549,15 +581,8 @@ def tag(ctx: click.Context, meeting_dir: str, client_slug: str) -> None:
     from meetflow.storage.files import save_meeting_markdown
     save_meeting_markdown(meeting, meeting_path)
 
-    # Update database
+    # Update database (id unchanged -> INSERT OR REPLACE updates the row in place)
     db = MeetingDB(config.data_dir / "meetflow.db")
-    cur = db._conn.cursor()
-    # Remove old entry
-    cur.execute("DELETE FROM transcript_segments WHERE meeting_id = ?", (old_id,))
-    cur.execute("DELETE FROM action_items WHERE meeting_id = ?", (old_id,))
-    cur.execute("DELETE FROM meetings WHERE id = ?", (old_id,))
-    db._conn.commit()
-    # Re-index with new ID
     db.index_meeting(meeting, str(json_path), data.get("recording", {}).get("opus_path"))
     db.close()
 
@@ -661,28 +686,32 @@ def history(ctx: click.Context, client_slug: str | None) -> None:
 def export(ctx: click.Context, client_slug: str, output: str | None) -> None:
     """Export all meeting data for a client (AVG data subject access)."""
     config = ctx.obj["config"]
-    meetings_dir = config.data_dir / "meetings"
+    from meetflow.storage.database import MeetingDB
 
-    if not meetings_dir.exists():
-        click.echo("No meetings found.")
-        return
+    # Resolve the client's meetings via the DB client_slug column (the source of truth),
+    # then map each row to its folder via json_path. Folder names are pure timestamps, so we
+    # never match on a "_<slug>" suffix anymore.
+    db = MeetingDB(config.data_dir / "meetflow.db")
+    cur = db._conn.cursor()
+    cur.execute("SELECT json_path FROM meetings WHERE client_slug = ?", (client_slug,))
+    rows = cur.fetchall()
+    db.close()
 
-    # Find all meeting directories for this client
-    client_dirs = sorted(d for d in meetings_dir.iterdir() if d.is_dir() and d.name.endswith(f"_{client_slug}"))
-
+    client_dirs = sorted({Path(r["json_path"]).parent for r in rows if r["json_path"]})
     if not client_dirs:
         click.echo(f"No meetings found for client '{client_slug}'")
         return
 
-    # Copy to export directory
     out_dir = Path(output) if output else Path(f"meetflow-export-{client_slug}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    exported = 0
     for src in client_dirs:
-        dst = out_dir / src.name
-        shutil.copytree(str(src), str(dst), dirs_exist_ok=True)
+        if src.exists():
+            shutil.copytree(str(src), str(out_dir / src.name), dirs_exist_ok=True)
+            exported += 1
 
-    click.echo(f"Exported {len(client_dirs)} meetings for '{client_slug}' to {out_dir}")
+    click.echo(f"Exported {exported} meetings for '{client_slug}' to {out_dir}")
 
 
 @cli.command()
@@ -692,45 +721,44 @@ def export(ctx: click.Context, client_slug: str, output: str | None) -> None:
 def delete(ctx: click.Context, client_slug: str, confirm: bool) -> None:
     """Delete all meeting data for a client (AVG right to erasure)."""
     config = ctx.obj["config"]
-    meetings_dir = config.data_dir / "meetings"
+    from meetflow.storage.database import MeetingDB
 
-    if not meetings_dir.exists():
-        click.echo("No meetings found.")
-        return
+    # Resolve via the DB client_slug column, then map rows to folders via json_path.
+    db = MeetingDB(config.data_dir / "meetflow.db")
+    cur = db._conn.cursor()
+    cur.execute("SELECT id, json_path FROM meetings WHERE client_slug = ?", (client_slug,))
+    rows = cur.fetchall()
+    meeting_ids = [r["id"] for r in rows]
+    client_dirs = sorted({Path(r["json_path"]).parent for r in rows if r["json_path"]})
 
-    client_dirs = sorted(d for d in meetings_dir.iterdir() if d.is_dir() and d.name.endswith(f"_{client_slug}"))
-
-    if not client_dirs:
+    if not meeting_ids:
         click.echo(f"No meetings found for client '{client_slug}'")
+        db.close()
         return
 
     if not confirm:
-        click.echo(f"This will permanently delete {len(client_dirs)} meetings for '{client_slug}':")
+        click.echo(f"This will permanently delete {len(meeting_ids)} meetings for '{client_slug}':")
         for d in client_dirs:
             click.echo(f"  {d.name}")
         if not click.confirm("Proceed?"):
             click.echo("Cancelled.")
+            db.close()
             return
 
-    # Delete from database
-    from meetflow.storage.database import MeetingDB
-
-    db = MeetingDB(config.data_dir / "meetflow.db")
-    cur = db._conn.cursor()
-    cur.execute("SELECT id FROM meetings WHERE client_slug = ?", (client_slug,))
-    meeting_ids = [row["id"] for row in cur.fetchall()]
     for mid in meeting_ids:
         cur.execute("DELETE FROM transcript_segments WHERE meeting_id = ?", (mid,))
         cur.execute("DELETE FROM action_items WHERE meeting_id = ?", (mid,))
         cur.execute("DELETE FROM meetings WHERE id = ?", (mid,))
+    # Keep the FTS index consistent (the AFTER INSERT trigger doesn't cover deletes).
+    cur.execute("INSERT INTO transcript_fts(transcript_fts) VALUES('rebuild')")
     db._conn.commit()
     db.close()
 
-    # Delete files
     for d in client_dirs:
-        shutil.rmtree(str(d))
+        if d.exists():
+            shutil.rmtree(str(d))
 
-    click.echo(f"Deleted {len(client_dirs)} meetings and {len(meeting_ids)} database records for '{client_slug}'")
+    click.echo(f"Deleted {len(meeting_ids)} meetings and DB records for '{client_slug}'")
 
 
 @cli.command()
@@ -785,6 +813,161 @@ def cleanup(ctx: click.Context, days: int | None, dry_run: bool) -> None:
         shutil.rmtree(str(d))
 
     click.echo(f"\nDeleted {len(old_dirs)} meetings and {len(meeting_ids)} database records.")
+
+
+@cli.command()
+@click.pass_context
+def doctor(ctx: click.Context) -> None:
+    """Read-only preflight: are the binaries, models, sidecar, DB and calendar ready?"""
+    config = ctx.obj["config"]
+    checks: list[tuple[str, bool, str]] = []
+
+    def _exists(p: str) -> bool:
+        return bool(p) and Path(p).expanduser().exists()
+
+    # whisper-cli + models
+    checks.append(("whisper-cli", _exists(config.whisper.cli_path), config.whisper.cli_path or "(unset)"))
+    checks.append(("whisper model", _exists(config.whisper.model_path), config.whisper.model_path or "(unset)"))
+    if config.whisper.vad_enabled:
+        checks.append(("VAD model", _exists(config.whisper.vad_model), config.whisper.vad_model or "(unset)"))
+    # extraction CLI
+    claude = shutil.which("claude")
+    checks.append(("claude CLI", claude is not None, claude or "not on PATH"))
+    # sidecar (.app) on macOS
+    if sys.platform == "darwin":
+        checks.append(("capture sidecar", _exists(config.capture.sidecar_path), config.capture.sidecar_path or "(unset)"))
+    # data dir + DB
+    meetings_dir = config.data_dir / "meetings"
+    checks.append(("data dir writable", meetings_dir.exists(), str(config.data_dir)))
+    try:
+        from meetflow.storage.database import MeetingDB
+
+        db = MeetingDB(config.data_dir / "meetflow.db")
+        n = len(db.list_meetings())
+        db.close()
+        checks.append(("database", True, f"{n} meetings indexed"))
+    except Exception as e:
+        checks.append(("database", False, str(e)[:60]))
+    # calendar (gws) — only if enabled
+    if config.calendar.enabled:
+        gws = shutil.which(config.calendar.gws_path) or _exists(config.calendar.gws_path)
+        detail = "ready" if gws else f"{config.calendar.gws_path} not found"
+        if gws:
+            try:
+                from meetflow.integrations.calendar import find_event
+
+                find_event(config.calendar, datetime.now().strftime("%Y-%m-%d"), "00:00:00", 60)
+                detail = "gws reachable"
+            except Exception as e:  # pragma: no cover
+                gws, detail = False, str(e)[:60]
+        checks.append(("calendar (gws)", bool(gws), detail))
+    # config sanity
+    checks.append(("my_name set", bool(config.my_name), config.my_name or "(unset)"))
+    checks.append(("glossary", bool(config.whisper.glossary), f"{len(config.whisper.glossary)} terms (advisory)"))
+
+    hard_fail = False
+    _echo("MeetFlow doctor:\n")
+    for label, ok, detail in checks:
+        # glossary is advisory-only, never a hard failure
+        if not ok and label != "glossary":
+            hard_fail = True
+        mark = "OK  " if ok else "FAIL"
+        _echo(f"  [{mark}] {label}: {detail}")
+    _echo("")
+    if hard_fail:
+        _echo("Some checks failed.")
+        sys.exit(1)
+    _echo("All systems go.")
+
+
+@cli.command()
+@click.option("--meeting", "meeting_id", default=None, help="Backfill a single meeting (folder id)")
+@click.option("--all-missing-titles", is_flag=True, help="Backfill every meeting with an empty title")
+@click.pass_context
+def backfill(ctx: click.Context, meeting_id: str | None, all_missing_titles: bool) -> None:
+    """Re-extract missing titles for existing meetings and reconcile client_slug with the DB.
+
+    Title-only by default (summaries are left untouched). Use for older recordings that were
+    produced before calendar/title enrichment existed.
+    """
+    import json
+
+    config = ctx.obj["config"]
+    from meetflow.extract.llm import extract_meeting_data
+    from meetflow.extract.schema import Meeting
+    from meetflow.integrations.calendar import find_event
+    from meetflow.storage.database import MeetingDB
+    from meetflow.storage.files import save_meeting_json, save_meeting_markdown
+    from meetflow.text import repair_text
+
+    meetings_dir = config.data_dir / "meetings"
+    if meeting_id:
+        candidates = [meetings_dir / meeting_id]
+    else:
+        candidates = sorted(d for d in meetings_dir.iterdir() if d.is_dir() and (d / "meeting.json").exists())
+
+    db = MeetingDB(config.data_dir / "meetflow.db")
+    done = 0
+    for mdir in candidates:
+        jp = mdir / "meeting.json"
+        if not jp.exists():
+            click.echo(f"  skip {mdir.name}: no meeting.json")
+            continue
+        data = json.loads(jp.read_text(encoding="utf-8"))
+        meeting = Meeting.model_validate(data)
+        needs_title = not (meeting.meeting_title or "").strip()
+        if all_missing_titles and not needs_title and not meeting_id:
+            continue
+
+        # Repair old-Windows mojibake + normalize dashes in stored text.
+        meeting.meeting_title = repair_text(meeting.meeting_title)
+        for seg in meeting.transcript:
+            seg.text = repair_text(seg.text)
+        ex = meeting.extraction
+        ex.summary = repair_text(ex.summary)
+        ex.client_needs = [repair_text(c) for c in ex.client_needs]
+        ex.objections = [repair_text(o) for o in ex.objections]
+        ex.follow_up_suggested = repair_text(ex.follow_up_suggested)
+        for it in ex.action_items.i_owe_them + ex.action_items.they_owe_me:
+            it.what = repair_text(it.what)
+        for q in ex.quotes:
+            q.text = repair_text(q.text)
+            q.context = repair_text(q.context)
+
+        # Reconcile slug from the DB column (source of truth).
+        row = db._conn.execute("SELECT client_slug FROM meetings WHERE id = ?", (meeting.id,)).fetchone()
+        if row and row["client_slug"]:
+            meeting.client_slug = row["client_slug"]
+
+        # Re-extract a title from the existing transcript (summary untouched).
+        if needs_title and meeting.transcript:
+            segs = [{"speaker": s.speaker, "start": s.start, "end": s.end, "text": s.text} for s in meeting.transcript]
+            try:
+                extraction = extract_meeting_data(segs, config.extraction, "", language=meeting.language or "nl")
+                if extraction.meeting_title:
+                    meeting.meeting_title = extraction.meeting_title
+            except Exception as e:
+                log.warning("backfill re-extract failed for %s: %s", meeting.id, e)
+
+        # Optional calendar backfill of title/them.
+        if config.calendar.enabled:
+            cm = find_event(config.calendar, meeting.date, meeting.start_time or "00:00:00", meeting.duration_seconds)
+            if cm:
+                if not meeting.meeting_title and cm.title:
+                    meeting.meeting_title = cm.title
+                if not meeting.participants.them and cm.them_names:
+                    meeting.participants.them = cm.them_names[0]
+
+        save_meeting_json(meeting, mdir)
+        save_meeting_markdown(meeting, mdir)
+        rec = (data.get("recording") or {}).get("opus_path")
+        db.index_meeting(meeting, str(jp), str(mdir / rec) if rec else None)
+        click.echo(f"  backfilled {meeting.id}: title={meeting.meeting_title!r} slug={meeting.client_slug}")
+        done += 1
+
+    db.close()
+    _rebuild_index(config)
+    click.echo(f"Backfilled {done} meeting(s); INDEX.md rebuilt.")
 
 
 @cli.command()
