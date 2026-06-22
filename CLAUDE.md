@@ -204,6 +204,16 @@ Reflecting on the first 8 real meetings drove an accuracy/enrichment pass (all P
 
 ## Remaining work (deferred — pick up next session)
 
+> **AEC route-auto-detect REVERTED to `off`, 2026-06-22.** Items 1 and 2 below called `aec =
+> "auto"` on built-in speakers DONE + LIVE. The one un-exercised path (a REAL call with actual
+> voice) was hit in production and BROKE the call: with the call app (Zoom/Teams/Meet) already
+> holding the mic, the sidecar's VPIO grab hijacked Dani's mic (his audio dropped) AND ducked the
+> incoming audio (the other party went much quieter). VPIO cannot coexist with another app that
+> owns the mic, so AEC must not engage during a live call. Immediate fix applied: `aec = "off"` in
+> `meetflow.local.toml` (the proven tap-only route) + daemon restarted. Proper fix (DEFERRED):
+> `route_auto_detect` must NOT enable VPIO while the mic is contended (detect an active call or a
+> second mic consumer and stay tap-only). Until that lands, keep `aec = "off"`; do not re-enable.
+
 1. **AEC sample-rate fix — DONE + LIVE 2026-06-20.** Root cause: the resampler used the tap's
    advertised 48 kHz, but the IOProc reads from the AGGREGATE device, which VPIO (dual mic+tap)
    reconfigures to 16 kHz → the 3× bug. Fix in `ProcessTap.start()`: read the aggregate device's
