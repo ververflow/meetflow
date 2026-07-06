@@ -14,6 +14,7 @@ CRITICAL RULES:
 - If no client needs are stated, return empty arrays.
 - NEVER make up names, dates, or commitments that aren't in the transcript.
 - The transcript uses channel-based speaker diarization. "Me" is the mic user, "Them" is the remote participant. Some attribution errors may remain — use conversational context to determine the actual speaker when labels seem inconsistent.
+- In your OUTPUT, NEVER write the literal labels "Me" or "Them" (they are transcript markers, not names). Refer to the mic user as "the speaker" (or their name if known) and the other party as "the client" / "the other participant" (or their name), in the transcript's language.
 """
 
 USER_PROMPT_TEMPLATE = """\
@@ -70,3 +71,55 @@ def format_transcript_for_prompt(segments: list[dict]) -> str:
         timestamp = f"[{seg['start']:.0f}s]"
         lines.append(f"{timestamp} {speaker}: {seg['text']}")
     return "\n".join(lines)
+
+
+# ── journal / brainstorm (lane C) ────────────────────────────────────────────────
+
+JOURNAL_SYSTEM_PROMPT = """\
+You distill a personal spoken journal / brainstorm into a faithful, structured note. The speaker is
+alone, thinking out loud, and often switches between Dutch and English.
+
+CRITICAL RULES:
+- ONLY use what the speaker actually said. NEVER invent, assume, infer, or embellish.
+- Write EVERY output value in the SAME language as the transcript (Dutch stays Dutch, English stays English).
+- Be faithful and concise: capture the real content and feeling, not a paraphrase that adds meaning.
+- The speaker sometimes addresses Claude / the assistant directly (e.g. "Hey Claude, ..."): collect
+  those direct asks or messages under notes_to_claude, close to verbatim.
+- todos are concrete things the speaker said they want or need to do. If none are stated, return [].
+- If a section has nothing, return an empty array. Do NOT pad.
+"""
+
+JOURNAL_USER_TEMPLATE = """\
+Distill this spoken personal journal / brainstorm into a structured note. ONLY use what is said below.
+
+## Transcript
+{transcript}
+
+Return valid JSON with EXACTLY this structure. Leave a field empty ("" or []) when the transcript has nothing for it:
+
+{{
+  "title": "short descriptive title (max 8 words)",
+  "summary": "faithful prose summary of what the speaker talked through",
+  "themes": ["the main topics touched"],
+  "insights": ["realizations or conclusions the speaker reached"],
+  "decisions": ["decisions the speaker made out loud"],
+  "open_questions": ["questions the speaker is still wrestling with"],
+  "todos": ["concrete things the speaker said they want or need to do"],
+  "notes_to_claude": ["any direct messages or asks the speaker addressed to Claude / the assistant"]
+}}
+"""
+
+
+def build_journal_prompt(transcript_text: str, language: str | None = None) -> str:
+    """Build the full user prompt for journal distillation."""
+    prompt = JOURNAL_USER_TEMPLATE.format(transcript=transcript_text)
+    if language:
+        lang_name = {"nl": "Dutch", "en": "English"}.get(language, language)
+        prompt += f"\n\nIMPORTANT: Write EVERY output value in {lang_name}, matching the transcript."
+    return prompt
+
+
+def format_journal_transcript(segments: list[dict]) -> str:
+    """Format a solo transcript for the journal prompt — timestamped, NO speaker labels (the
+    speaker is always the user, so 'Me:'/'Them:' would be noise)."""
+    return "\n".join(f"[{seg['start']:.0f}s] {seg['text']}" for seg in segments)

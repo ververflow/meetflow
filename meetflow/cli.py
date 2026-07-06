@@ -96,7 +96,10 @@ def cli(ctx: click.Context, config_path: str | None) -> None:
     _setup_logging()
     ctx.ensure_object(dict)
     path = Path(config_path) if config_path else None
+    from meetflow.config import apply_vocab_ssot
+
     ctx.obj["config"] = load_config(path)
+    apply_vocab_ssot(ctx.obj["config"])  # merge the shared vocab/fixups SSOT into whisper config
 
 
 @cli.command()
@@ -322,8 +325,17 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
     finally:
         set_meeting_vocab([])  # never leak vocab into the next meeting
     if not diarized:
-        _echo("No speech detected in recording.")
-        return None
+        # Do NOT return here: fall through so an empty/accidental recording is transcoded, saved,
+        # quarantined, and indexed — TRACKED and reversible instead of stranding a raw recording.wav
+        # no command can see (the 2026-07-01_0235 orphan). extract_meeting_data skips the LLM at 0 segs.
+        _echo("No speech detected — archiving + quarantining (no orphan).")
+
+    # Correct the transcript-of-record (not just the LLM summary): the shared fixups fix
+    # "how to call"/"fair flow"-style manglings before the LLM, DB, and meeting.md see them.
+    from meetflow.text import apply_fixups
+
+    for s in diarized:
+        s.text = apply_fixups(s.text, config.whisper.fixups, config.whisper.fixups_brand)
 
     _echo(f"  {len(diarized)} segments transcribed")
 
@@ -382,6 +394,8 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
     if not them and cal_match and cal_match.them_names:
         them = cal_match.them_names[0]
     meeting.participants.them = them
+    if not diarized:
+        meeting.tags.append("no-speech")  # explicit marker; is_junk quarantines it below anyway
 
     # Collect opus result (blocks if still encoding)
     opus_path = None
@@ -458,14 +472,25 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
     return meeting
 
 
+def _run_journal(wav_path: Path, config):
+    """The lane-C journal pipeline: injected into the daemon and used by `process --kind journal`."""
+    from meetflow.journal import run_journal_pipeline
+
+    return run_journal_pipeline(wav_path, config)
+
+
 @cli.command()
 @click.argument("wav_path", type=click.Path(exists=True))
 @click.option("--client", "client_slug", default=None, help="Client slug for CRM linkage")
+@click.option("--kind", type=click.Choice(["meeting", "journal"]), default="meeting", help="Which pipeline to run")
 @click.pass_context
-def process(ctx: click.Context, wav_path: str, client_slug: str | None) -> None:
-    """Process an existing WAV recording through the pipeline."""
+def process(ctx: click.Context, wav_path: str, client_slug: str | None, kind: str) -> None:
+    """Process an existing WAV recording through the pipeline (meeting or journal)."""
     config = ctx.obj["config"]
     path = Path(wav_path)
+    if kind == "journal":
+        _run_journal(path, config)
+        return
     # Do NOT infer a slug from the folder name: folders are "YYYY-MM-DD_HHMM", so the old
     # split("_") took the TIME as the slug (the "110000" bug). Leave it None -> "unknown",
     # which calendar enrichment can still upgrade to a real client slug.
@@ -488,7 +513,7 @@ def daemon(ctx: click.Context) -> None:
     config = ctx.obj["config"]
     from meetflow.daemon import run_daemon
 
-    run_daemon(config, _run_pipeline)
+    run_daemon(config, _run_pipeline, _run_journal)
 
 
 @cli.command()
@@ -519,6 +544,16 @@ def toggle(ctx: click.Context) -> None:
 
     write_command(ctx.obj["config"], "toggle")
     click.echo("toggle")
+
+
+@cli.command()
+@click.pass_context
+def journal(ctx: click.Context) -> None:
+    """Toggle a solo journaling / brainstorm session on the running daemon (lane C, Hyper+J)."""
+    from meetflow.daemon import write_command
+
+    write_command(ctx.obj["config"], "journal")
+    click.echo("journal")
 
 
 @cli.command()

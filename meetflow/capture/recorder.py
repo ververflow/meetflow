@@ -44,6 +44,9 @@ class Recorder:
             capture_mic=self._mac_sidecar,
             resolved_aec=self._resolved_aec,
         )
+        self._using_sidecar_mic = False
+        self._start_time: float | None = None
+        self._mic_only = False
 
     def _resolve_aec(self) -> str:
         """Resolve the effective AEC mode to "on" (dual mic+tap sidecar) or "off" (tap-only).
@@ -64,12 +67,18 @@ class Recorder:
                 log.info("route_auto_detect: %s -> AEC on", route.get("route"))
                 return "on"
         return "off"
-        self._using_sidecar_mic = False
-        self._start_time: float | None = None
 
-    def start(self) -> None:
-        """Start recording both channels."""
+    def start(self, mic_only: bool = False) -> None:
+        """Start recording. `mic_only` (journal / lane C) skips the system-audio tap AND the consent
+        reminder — a solo session captures just the mic, so there is nobody to warn."""
         self._start_time = time.time()
+        self._mic_only = mic_only
+
+        if mic_only:
+            self.mic.start()
+            self._using_sidecar_mic = False
+            log.info("Recording started (mic-only / journal)")
+            return
 
         if self.config.privacy.auto_notify_reminder:
             log.info("HERINNERING: Meld aan de deelnemer dat dit gesprek wordt opgenomen.")
@@ -83,48 +92,59 @@ class Recorder:
             self.mic.start()
         log.info("Recording started")
 
-    def stop(self) -> Path | None:
-        """Stop recording and write a 2-channel WAV file. Returns the WAV path."""
-        loopback_audio = self.loopback.stop()
-        if self._using_sidecar_mic:
-            mic_audio = self.loopback.mic_audio
-            if mic_audio is None:
-                mic_audio = np.array([], dtype=np.float32)
-        else:
+    def stop(self, subdir: str = "meetings") -> Path | None:
+        """Stop recording and write the WAV. A meeting writes a 2-channel (me/them) file into
+        `meetings/`; a mic-only journal writes a MONO file into `subdir` (e.g. `journal/`)."""
+        if self._mic_only:
             mic_audio = self.mic.stop()
+            loopback_audio = np.array([], dtype=np.float32)
+        else:
+            loopback_audio = self.loopback.stop()
+            if self._using_sidecar_mic:
+                mic_audio = self.loopback.mic_audio
+                if mic_audio is None:
+                    mic_audio = np.array([], dtype=np.float32)
+            else:
+                mic_audio = self.mic.stop()
         self._using_sidecar_mic = False
 
         if len(mic_audio) == 0 and len(loopback_audio) == 0:
             log.info("No audio captured.")
             return None
 
-        # Align lengths — pad the shorter one with silence
-        max_len = max(len(mic_audio), len(loopback_audio))
-        if len(mic_audio) < max_len:
-            mic_audio = np.pad(mic_audio, (0, max_len - len(mic_audio)))
-        if len(loopback_audio) < max_len:
-            loopback_audio = np.pad(loopback_audio, (0, max_len - len(loopback_audio)))
+        if self._mic_only:
+            audio = mic_audio                       # 1-D mono: no loopback channel for a solo journal
+            length = len(mic_audio)
+        else:
+            # Align lengths — pad the shorter one with silence
+            max_len = max(len(mic_audio), len(loopback_audio))
+            if len(mic_audio) < max_len:
+                mic_audio = np.pad(mic_audio, (0, max_len - len(mic_audio)))
+            if len(loopback_audio) < max_len:
+                loopback_audio = np.pad(loopback_audio, (0, max_len - len(loopback_audio)))
+            # Stack into 2-channel array: ch0=mic (me), ch1=loopback (them)
+            audio = np.stack([mic_audio, loopback_audio], axis=1)
+            length = max_len
 
-        # Stack into 2-channel array: ch0=mic (me), ch1=loopback (them)
-        stereo = np.stack([mic_audio, loopback_audio], axis=1)
-
-        duration = max_len / self.config.audio.sample_rate
+        duration = length / self.config.audio.sample_rate
         start_dt = datetime.fromtimestamp(self._start_time) if self._start_time else datetime.now()
 
         # Build output path — self-describing, sortable: YYYY-MM-DD_HHMM (+ counter on collision)
         base_name = start_dt.strftime("%Y-%m-%d_%H%M")
-        meeting_dir = self.config.data_dir / "meetings" / base_name
+        out_root = self.config.data_dir / subdir
+        meeting_dir = out_root / base_name
         counter = 1
         while meeting_dir.exists():
-            meeting_dir = self.config.data_dir / "meetings" / f"{base_name}_{counter}"
+            meeting_dir = out_root / f"{base_name}_{counter}"
             counter += 1
         meeting_dir.mkdir(parents=True, exist_ok=True)
         wav_path = meeting_dir / "recording.wav"
 
-        sf.write(str(wav_path), stereo, self.config.audio.sample_rate)
+        sf.write(str(wav_path), audio, self.config.audio.sample_rate)
         log.info("Saved %.1fs recording to %s", duration, wav_path)
 
         self._start_time = None
+        self._mic_only = False
         return wav_path
 
     @property

@@ -13,6 +13,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meetings (
     id TEXT PRIMARY KEY,
     client_slug TEXT,
+    kind TEXT DEFAULT 'meeting',
     date TEXT,
     duration_seconds INTEGER,
     summary TEXT,
@@ -39,6 +40,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS transcript_fts USING fts5(
 );
 
 CREATE TRIGGER IF NOT EXISTS transcript_ai AFTER INSERT ON transcript_segments BEGIN
+    INSERT INTO transcript_fts(rowid, meeting_id, speaker, text)
+    VALUES (new.rowid, new.meeting_id, new.speaker, new.text);
+END;
+
+-- External-content FTS needs explicit delete/update sync (the 'delete' command feeds the OLD row
+-- so FTS can remove its tokens). Without these, index_meeting's delete+reinsert of a meeting's
+-- segments (and `cleanup`) orphaned rows in transcript_fts, so search returned stale snippets.
+CREATE TRIGGER IF NOT EXISTS transcript_ad AFTER DELETE ON transcript_segments BEGIN
+    INSERT INTO transcript_fts(transcript_fts, rowid, meeting_id, speaker, text)
+    VALUES ('delete', old.rowid, old.meeting_id, old.speaker, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_au AFTER UPDATE ON transcript_segments BEGIN
+    INSERT INTO transcript_fts(transcript_fts, rowid, meeting_id, speaker, text)
+    VALUES ('delete', old.rowid, old.meeting_id, old.speaker, old.text);
     INSERT INTO transcript_fts(rowid, meeting_id, speaker, text)
     VALUES (new.rowid, new.meeting_id, new.speaker, new.text);
 END;
@@ -80,14 +96,34 @@ class MeetingDB:
             cur.execute("ALTER TABLE meetings RENAME COLUMN duration_minutes TO duration_seconds")
             self._conn.commit()
             log.info("Migrated: duration_minutes -> duration_seconds")
+        # `columns` is non-empty only when the meetings table already exists; a fresh DB gets `kind`
+        # straight from _SCHEMA below, so this ALTER runs only on pre-journal databases.
+        if columns and "kind" not in columns:
+            cur.execute("ALTER TABLE meetings ADD COLUMN kind TEXT DEFAULT 'meeting'")
+            self._conn.commit()
+            log.info("Migrated: added meetings.kind (default 'meeting')")
+        # One-time FTS repair (user_version-gated so it runs once): index_meeting deletes+reinserts
+        # a meeting's segments with fresh rowids, and before the AFTER DELETE/UPDATE triggers existed
+        # that orphaned rows in transcript_fts. Rebuild heals any existing drift.
+        cur.execute("PRAGMA user_version")
+        if cur.fetchone()[0] < 1:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='transcript_fts'")
+            if cur.fetchone():
+                try:
+                    self._conn.execute("INSERT INTO transcript_fts(transcript_fts) VALUES('rebuild')")
+                    log.info("Migrated: rebuilt transcript_fts")
+                except sqlite3.Error:
+                    log.warning("FTS rebuild skipped", exc_info=True)
+            cur.execute("PRAGMA user_version = 1")
+            self._conn.commit()
 
     def index_meeting(self, meeting: Meeting, json_path: str, audio_path: str | None = None) -> None:
         """Insert or replace a meeting and its transcript segments."""
         cur = self._conn.cursor()
 
         cur.execute(
-            "INSERT OR REPLACE INTO meetings (id, client_slug, date, duration_seconds, summary, json_path, audio_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (meeting.id, meeting.client_slug, meeting.date, meeting.duration_seconds, meeting.extraction.summary, json_path, audio_path),
+            "INSERT OR REPLACE INTO meetings (id, client_slug, kind, date, duration_seconds, summary, json_path, audio_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (meeting.id, meeting.client_slug, getattr(meeting, "kind", "meeting"), meeting.date, meeting.duration_seconds, meeting.extraction.summary, json_path, audio_path),
         )
 
         # Clear old segments for re-indexing
@@ -133,8 +169,11 @@ class MeetingDB:
         )
         return [dict(row) for row in cur.fetchall()]
 
-    def list_meetings(self) -> list[dict]:
-        """All meetings, newest first, with open-action counts (for the INDEX overview)."""
+    def list_meetings(self, kind: str = "meeting") -> list[dict]:
+        """Meetings of the given kind, newest first, with open-action counts (for the overview).
+
+        Defaults to "meeting" so INDEX.md excludes journals; JOURNAL.md passes kind="journal".
+        """
         cur = self._conn.cursor()
         cur.execute(
             """
@@ -142,8 +181,10 @@ class MeetingDB:
                    (SELECT COUNT(*) FROM action_items a
                     WHERE a.meeting_id = m.id AND a.status = 'open') AS open_actions
             FROM meetings m
+            WHERE m.kind = ?
             ORDER BY m.id DESC
-            """
+            """,
+            (kind,),
         )
         return [dict(row) for row in cur.fetchall()]
 

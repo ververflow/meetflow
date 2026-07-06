@@ -31,7 +31,7 @@ import numpy as np
 import soundfile as sf
 
 from meetflow.config import WhisperConfig
-from meetflow.transcribe.filters import is_low_confidence, strip_hallucinations
+from meetflow.transcribe.filters import collapse_repeated_segments, is_low_confidence, strip_hallucinations
 
 log = logging.getLogger(__name__)
 
@@ -153,6 +153,7 @@ class _ServerBackend:
             text = strip_hallucinations((seg.get("text") or "").strip())
             if text:
                 results.append(Segment(start=float(seg["start"]), end=float(seg["end"]), text=text, language=label))
+        results = collapse_repeated_segments(results)
         log.info("Transcribed %d segments in %s via whisper-server", len(results), label)
         return results
 
@@ -204,6 +205,14 @@ class _CliBackend:
                 "-vmsd", str(getattr(config, "vad_max_speech_s", 30)),
                 "-vp", str(config.vad_speech_pad_ms),
             ]
+        # Anti-loop knobs — emitted ONLY when set away from their defaults, so a meeting's command
+        # line stays byte-identical (journal mode sets these; see JournalConfig / config overrides).
+        mc = getattr(config, "max_context", -1)
+        if mc is not None and mc >= 0:
+            cmd += ["-mc", str(mc)]
+        et = getattr(config, "entropy_thold", None)
+        if et is not None:
+            cmd += ["-et", str(et)]
         return cmd
 
     @staticmethod
@@ -248,6 +257,7 @@ class _CliBackend:
                         language=label,
                     )
                 )
+        results = collapse_repeated_segments(results)
         log.info("Transcribed %d segments in %s via whisper-cli (vad=%s)", len(results), label, getattr(config, "vad_enabled", True))
         return results
 

@@ -32,6 +32,20 @@ class Extraction(BaseModel):
     follow_up_suggested: str = ""
 
 
+class JournalExtraction(BaseModel):
+    """Distillation of a solo journaling / brainstorm session (lane C). No action-item ownership,
+    no client — the speaker is alone, thinking out loud."""
+
+    title: str = ""
+    summary: str = ""
+    themes: list[str] = Field(default_factory=list)
+    insights: list[str] = Field(default_factory=list)
+    decisions: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    todos: list[str] = Field(default_factory=list)
+    notes_to_claude: list[str] = Field(default_factory=list)
+
+
 class TranscriptSegment(BaseModel):
     speaker: str
     start: float
@@ -52,6 +66,7 @@ class Recording(BaseModel):
 class Meeting(BaseModel):
     id: str
     client_slug: str
+    kind: str = "meeting"  # "meeting" (2+ people) or "journal" (solo brainstorm, lane C)
     meeting_title: str = ""
     date: str
     start_time: str
@@ -61,6 +76,7 @@ class Meeting(BaseModel):
     participants: Participants
     transcript: list[TranscriptSegment] = Field(default_factory=list)
     extraction: Extraction = Field(default_factory=Extraction)
+    journal: JournalExtraction | None = None  # set only when kind == "journal"
     recording: Recording = Field(default_factory=Recording)
     tags: list[str] = Field(default_factory=list)
     notes_user: str = ""

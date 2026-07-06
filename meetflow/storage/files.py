@@ -145,3 +145,75 @@ def save_meeting_markdown(meeting: Meeting, meeting_dir: Path) -> Path:
     md_path.write_text("\n".join(lines), encoding="utf-8")
     log.info("Saved meeting.md to %s", md_path)
     return md_path
+
+
+# ── journal (lane C) ─────────────────────────────────────────────────────────────
+
+
+def save_journal_markdown(meeting: Meeting, journal_dir: Path) -> Path:
+    """Write journal.md — the human-readable distillation of a solo journaling session. No speaker
+    labels (the speaker is always the user); todos render as checkboxes."""
+    md_path = journal_dir / "journal.md"
+    j = meeting.journal
+    title = (j.title if j else "") or meeting.meeting_title or "Journal"
+    lines = [
+        f"# Journal: {title}",
+        f"**Date:** {meeting.date} {meeting.start_time} - {meeting.end_time}",
+        f"**Duration:** {meeting.duration_seconds // 60}m {meeting.duration_seconds % 60}s",
+        f"**Language:** {meeting.language}",
+        "",
+        "## Summary",
+        (j.summary if j else "") or meeting.extraction.summary,
+        "",
+    ]
+    if j:
+        for header, items in [
+            ("Themes", j.themes),
+            ("Insights", j.insights),
+            ("Decisions", j.decisions),
+            ("Open questions", j.open_questions),
+            ("Todos", j.todos),
+            ("Notes to Claude", j.notes_to_claude),
+        ]:
+            if items:
+                lines.append(f"## {header}")
+                prefix = "- [ ] " if header == "Todos" else "- "
+                lines.extend(f"{prefix}{it}" for it in items)
+                lines.append("")
+
+    if meeting.transcript:
+        lines.append("## Transcript")
+        for seg in meeting.transcript:
+            lines.append(f"**[{seg.start:.0f}s]** {seg.text}")
+        lines.append("")
+
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+    log.info("Saved journal.md to %s", md_path)
+    return md_path
+
+
+def generate_journal_index(journals: list[dict], journal_root: Path) -> Path:
+    """Write JOURNAL.md — a reverse-chronological overview of journaling sessions (lane C).
+    Pure derived data from the DB; safe to rebuild. No open-actions column (journals hold none)."""
+    lines = [
+        "# MeetFlow — journal",
+        "",
+        f"_{len(journals)} entries · auto-generated._",
+        "",
+        "| Datum | Titel | Duur | Map |",
+        "|---|---|---|---|",
+    ]
+    for m in journals:
+        mid = m["id"]
+        dur = m.get("duration_seconds") or 0
+        title = _meeting_title(m.get("json_path"), m.get("summary") or "").strip().replace("\n", " ")
+        if len(title) > 70:
+            title = title[:69] + "…"
+        lines.append(f"| {m.get('date', '')} | {title or '—'} | {dur // 60}m | [`{mid}`]({mid}/) |")
+    lines.append("")
+
+    journal_root.mkdir(parents=True, exist_ok=True)
+    index_path = journal_root / "JOURNAL.md"
+    index_path.write_text("\n".join(lines), encoding="utf-8")
+    log.info("Wrote JOURNAL.md (%d entries)", len(journals))
+    return index_path

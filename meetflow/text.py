@@ -42,6 +42,59 @@ def repair_text(text: str) -> str:
     return normalize_dashes(text)
 
 
+def _is_word_char(c: str) -> bool:
+    return bool(c) and c.isalnum()
+
+
+def _ireplace(hay: str, needle: str, repl: str, prefix_only: bool = False) -> str:
+    """Case-insensitive, boundary-aware substring replace (a port of dictation.lua's ireplace).
+
+    Both-boundary by default: replaces only when the chars on BOTH sides of the match are
+    non-word (or a string edge), so it never corrupts a longer correct word. prefix_only requires
+    a boundary only BEFORE the match, so a brand glued into a Dutch compound ("houtcalcfacturen")
+    still gets fixed. Matching is done against the lowercased original, so a replacement that
+    contains the needle can't re-match.
+    """
+    if not needle:
+        return hay
+    lh, ln, n = hay.lower(), needle.lower(), len(hay)
+    out: list[str] = []
+    i = 0
+    while True:
+        s = lh.find(ln, i)
+        if s == -1:
+            out.append(hay[i:])
+            break
+        e = s + len(ln)  # exclusive end
+        before_ok = not _is_word_char(lh[s - 1]) if s > 0 else True
+        after_ok = True if prefix_only else (not _is_word_char(lh[e]) if e < n else True)
+        if before_ok and after_ok:
+            out.append(hay[i:s])
+            out.append(repl)
+        else:
+            out.append(hay[i:e])
+        i = e
+    return "".join(out)
+
+
+def apply_fixups(text: str, fixups=None, fixups_brand=None) -> str:
+    """Apply post-transcription term corrections to a segment's text-of-record.
+
+    `fixups` need a word boundary on BOTH sides (safe for ambiguous phrases like "fair flow");
+    `fixups_brand` need one only BEFORE (so a brand inside a compound is still fixed). Mirrors the
+    dictation.lua clean() pass so both lanes correct the same way. No-op when the lists are empty.
+    """
+    if not text:
+        return text
+    for pair in fixups or []:
+        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+            text = _ireplace(text, pair[0], pair[1], prefix_only=False)
+    for pair in fixups_brand or []:
+        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+            text = _ireplace(text, pair[0], pair[1], prefix_only=True)
+    return text
+
+
 def sanitize_slug(slug: str) -> str:
     """Sanitize a client slug — only lowercase alphanumeric and hyphens."""
     clean = re.sub(r"[^a-z0-9-]", "-", slug.lower().strip())

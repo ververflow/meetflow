@@ -7,8 +7,15 @@ import os
 import re
 
 from meetflow.config import ExtractionConfig
-from meetflow.extract.prompts import SYSTEM_PROMPT, build_extraction_prompt, format_transcript_for_prompt
-from meetflow.extract.schema import ActionItem, ActionItems, Extraction, Quote
+from meetflow.extract.prompts import (
+    JOURNAL_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    build_extraction_prompt,
+    build_journal_prompt,
+    format_journal_transcript,
+    format_transcript_for_prompt,
+)
+from meetflow.extract.schema import ActionItem, ActionItems, Extraction, JournalExtraction, Quote
 
 log = logging.getLogger(__name__)
 
@@ -53,11 +60,11 @@ def extract_meeting_data(
     return extraction
 
 
-def _call_claude_code(user_prompt: str, config: ExtractionConfig) -> str:
+def _call_claude_code(user_prompt: str, config: ExtractionConfig, system: str = SYSTEM_PROMPT) -> str:
     """Call Claude via the Claude Code CLI — uses existing subscription. Retries once on timeout."""
     import subprocess
 
-    full_prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt}"
+    full_prompt = f"{system}\n\n{user_prompt}"
 
     # Map full model name to CLI short name (e.g. "claude-haiku-4-5-20251001" → "haiku")
     model = config.claude_model
@@ -100,7 +107,7 @@ def _call_claude_code(user_prompt: str, config: ExtractionConfig) -> str:
     return ""
 
 
-def _call_claude(user_prompt: str, config: ExtractionConfig) -> str:
+def _call_claude(user_prompt: str, config: ExtractionConfig, system: str = SYSTEM_PROMPT) -> str:
     """Call Claude API for extraction."""
     import anthropic
 
@@ -114,7 +121,7 @@ def _call_claude(user_prompt: str, config: ExtractionConfig) -> str:
     response = client.messages.create(
         model=config.claude_model,
         max_tokens=4096,
-        system=SYSTEM_PROMPT,
+        system=system,
         messages=[{"role": "user", "content": user_prompt}],
     )
 
@@ -123,7 +130,7 @@ def _call_claude(user_prompt: str, config: ExtractionConfig) -> str:
     return text
 
 
-def _call_ollama(user_prompt: str, config: ExtractionConfig) -> str:
+def _call_ollama(user_prompt: str, config: ExtractionConfig, system: str = SYSTEM_PROMPT) -> str:
     """Call local Ollama for extraction."""
     import httpx
 
@@ -132,7 +139,7 @@ def _call_ollama(user_prompt: str, config: ExtractionConfig) -> str:
         f"{config.ollama_url}/api/generate",
         json={
             "model": config.ollama_model,
-            "system": SYSTEM_PROMPT,
+            "system": system,
             "prompt": user_prompt,
             "format": "json",
             "stream": False,
@@ -147,6 +154,55 @@ def _call_ollama(user_prompt: str, config: ExtractionConfig) -> str:
     text = resp.json()["response"]
     log.info("Ollama extraction complete (%d chars)", len(text))
     return text
+
+
+def extract_journal_data(
+    segments: list[dict],
+    config: ExtractionConfig,
+    language: str | None = None,
+) -> JournalExtraction:
+    """Distill a solo journal / brainstorm transcript into a structured JournalExtraction.
+
+    Reuses the meeting LLM plumbing (same providers, same JSON salvage) with the journal system
+    prompt, so a Dutch journal stays Dutch and an English one stays English.
+    """
+    if not segments:
+        return JournalExtraction()
+    transcript_text = format_journal_transcript(segments)
+    if len(transcript_text) < 50:
+        return JournalExtraction(summary=" ".join(s["text"] for s in segments))
+
+    user_prompt = build_journal_prompt(transcript_text, language)
+    if config.provider == "claude-code":
+        raw = _call_claude_code(user_prompt, config, system=JOURNAL_SYSTEM_PROMPT)
+    elif config.provider == "claude":
+        raw = _call_claude(user_prompt, config, system=JOURNAL_SYSTEM_PROMPT)
+    elif config.provider == "ollama":
+        raw = _call_ollama(user_prompt, config, system=JOURNAL_SYSTEM_PROMPT)
+    else:
+        raise ValueError(f"Unknown extraction provider: {config.provider}")
+    return _parse_journal(raw)
+
+
+def _parse_journal(raw: str) -> JournalExtraction:
+    """Parse the LLM response into a JournalExtraction, salvaging loose JSON like meetings do."""
+    data = _find_json_dict(raw)
+    if data is not None:
+        try:
+            return JournalExtraction(
+                title=_as_str(data.get("title")),
+                summary=_as_str(data.get("summary")),
+                themes=_as_str_list(data.get("themes")),
+                insights=_as_str_list(data.get("insights")),
+                decisions=_as_str_list(data.get("decisions")),
+                open_questions=_as_str_list(data.get("open_questions")),
+                todos=_as_str_list(data.get("todos")),
+                notes_to_claude=_as_str_list(data.get("notes_to_claude")),
+            )
+        except Exception as e:  # noqa: BLE001 — last-resort guard around best-effort coercion
+            log.warning("Journal coercion failed (%s); falling back to raw summary", e)
+    log.warning("No parseable JSON in journal extraction. Raw: %s", raw.strip()[:300])
+    return JournalExtraction(summary=raw.strip()[:500] if raw.strip() else "")
 
 
 def _parse_extraction(raw: str) -> Extraction:

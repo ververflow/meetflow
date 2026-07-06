@@ -1,6 +1,7 @@
 """Load MeetFlow configuration from TOML."""
 from __future__ import annotations
 
+import json
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,6 +65,11 @@ class WhisperConfig:
     vad_min_speech_ms: int = 250
     vad_min_silence_ms: int = 100
     vad_speech_pad_ms: int = 200
+    # Anti-loop decode knobs. Defaults are OFF (emit no flag) so the meeting command line stays
+    # byte-identical; journal mode overrides them (max_context=0 stops the decoder carrying looped
+    # text between windows; entropy_thold makes the temperature fallback fire earlier on loops).
+    max_context: int = -1                 # whisper-cli -mc; -1 = model default → no flag emitted
+    entropy_thold: float | None = None    # whisper-cli -et; None = model default → no flag emitted
     context_prompts: dict[str, str] = field(default_factory=lambda: {
         "nl": "Hé, even een update over het project. Kunnen we dat morgen bespreken?",
         "en": "Hey, quick update on the project. Can we discuss this tomorrow?",
@@ -72,12 +78,26 @@ class WhisperConfig:
     # correctly (e.g. ["Oer Sterk", "Burg", "HoutCalc", "Dani Verver"]). Per-meeting names
     # (calendar attendees, CRM contact) are layered on top at runtime; see engine.build_prompt.
     glossary: list[str] = field(default_factory=list)
+    # Post-transcription term corrections, loaded from the vocab SSOT at CLI startup (see
+    # apply_vocab_ssot). fixups need a word boundary on BOTH sides; fixups_brand only BEFORE.
+    fixups: list = field(default_factory=list)
+    fixups_brand: list = field(default_factory=list)
+
+
+@dataclass
+class JournalConfig:
+    """Solo journaling / brainstorm lane (lane C): mic-only capture, no diarization, own store dir.
+    Decode overrides come from the offline A/B on the real journal (max_context=0 stops the decoder
+    carrying looped text between VAD windows; nothing else moved the needle)."""
+
+    dirname: str = "journal"
+    max_context: int = 0
 
 
 @dataclass
 class ExtractionConfig:
     provider: str = "claude-code"
-    claude_model: str = "haiku"
+    claude_model: str = "sonnet"  # aligned with the committed template (was "haiku")
     ollama_model: str = "llama3"
     ollama_url: str = "http://localhost:11434"
 
@@ -85,7 +105,7 @@ class ExtractionConfig:
 @dataclass
 class StorageConfig:
     archive_format: str = "opus"
-    opus_bitrate: str = "32k"
+    opus_bitrate: str = "48k"  # aligned with the committed template (was "32k")
     keep_wav: bool = False
 
 
@@ -146,6 +166,7 @@ class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     whisper: WhisperConfig = field(default_factory=WhisperConfig)
+    journal: JournalConfig = field(default_factory=JournalConfig)
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
@@ -196,6 +217,7 @@ def load_config(path: Path | None = None) -> Config:
         audio=AudioConfig(**{k: v for k, v in raw.get("audio", {}).items() if k in AudioConfig.__dataclass_fields__}),
         capture=CaptureConfig(**{k: v for k, v in raw.get("capture", {}).items() if k in CaptureConfig.__dataclass_fields__}),
         whisper=WhisperConfig(**whisper_kwargs),
+        journal=JournalConfig(**{k: v for k, v in raw.get("journal", {}).items() if k in JournalConfig.__dataclass_fields__}),
         extraction=ExtractionConfig(
             **{k: v for k, v in raw.get("extraction", {}).items() if k in ExtractionConfig.__dataclass_fields__}
         ),
@@ -210,3 +232,35 @@ def load_config(path: Path | None = None) -> Config:
     if not cfg.data_dir.is_absolute():
         cfg.data_dir = (path.parent / cfg.data_dir).resolve()
     return cfg
+
+
+_VOCAB_DIR = Path.home() / ".config" / "whisper"
+
+
+def apply_vocab_ssot(config: Config, vocab_dir: Path | None = None) -> None:
+    """Merge the shared vocab SSOT into config.whisper: terms → glossary (proper-noun priming),
+    plus the fixup lists (post-transcription corrections).
+
+    Two files: vocab.json (own brands/tools, committed) and vocab.local.json (client names,
+    gitignored) — same overlay pattern as meetflow.local.toml. Called once at CLI startup, NOT
+    inside load_config, so tests that load the bare template keep an empty glossary. Tolerates
+    missing or malformed files (keeps whatever config already had).
+    """
+    vdir = vocab_dir or _VOCAB_DIR
+    terms = list(config.whisper.glossary)
+    fixups = list(getattr(config.whisper, "fixups", []) or [])
+    fixups_brand = list(getattr(config.whisper, "fixups_brand", []) or [])
+    for name in ("vocab.json", "vocab.local.json"):
+        p = vdir / name
+        if not p.exists():
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        terms += [t for t in data.get("terms", []) if isinstance(t, str)]
+        fixups += [x for x in data.get("fixups", []) if isinstance(x, list) and len(x) == 2]
+        fixups_brand += [x for x in data.get("fixups_brand", []) if isinstance(x, list) and len(x) == 2]
+    config.whisper.glossary = list(dict.fromkeys(terms))
+    config.whisper.fixups = fixups
+    config.whisper.fixups_brand = fixups_brand
