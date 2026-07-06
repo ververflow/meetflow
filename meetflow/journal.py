@@ -27,7 +27,7 @@ def run_journal_pipeline(wav_path: Path, config):
     import soundfile as sf
 
     from meetflow.extract.llm import extract_journal_data
-    from meetflow.extract.schema import Extraction, Meeting, Participants, Recording, TranscriptSegment
+    from meetflow.extract.schema import Extraction, JournalExtraction, Meeting, Participants, Recording, TranscriptSegment
     from meetflow.storage.audio import wav_to_opus
     from meetflow.storage.database import MeetingDB
     from meetflow.storage.files import save_journal_markdown, save_meeting_json
@@ -106,9 +106,17 @@ def run_journal_pipeline(wav_path: Path, config):
         )
 
     try:
-        # 6. Distill via the Claude CLI (journal system prompt). Every segment is the speaker.
+        # 6. Distill via the Claude CLI. If distillation FAILS (e.g. the Claude usage limit), do NOT
+        #    lose the transcript: fall back to an empty distillation, tag it, and still save + index.
+        #    Re-run the distillation later (no re-record, no re-transcribe) with `meetflow redistill`.
         segs_for_llm = [{"speaker": "me", "start": s.start, "end": s.end, "text": s.text} for s in segments]
-        journal = extract_journal_data(segs_for_llm, config.extraction, language=primary_lang)
+        try:
+            journal = extract_journal_data(segs_for_llm, config.extraction, language=primary_lang)
+            distill_ok = True
+        except Exception as e:  # noqa: BLE001 — a failed distillation must not lose the transcript
+            log.warning("Journal distillation failed (%s); saving transcript, re-run `meetflow redistill %s`", e, journal_id)
+            journal = JournalExtraction(title="(distillatie mislukt)")
+            distill_ok = False
 
         # 7. Build the Meeting (kind='journal'). extraction carries a MINIMAL summary/title so the
         #    DB row + FTS search stay uniform; the rich content lives in .journal. No action_items.
@@ -127,6 +135,8 @@ def run_journal_pipeline(wav_path: Path, config):
             extraction=Extraction(meeting_title=journal.title, summary=journal.summary),
             journal=journal,
         )
+        if not distill_ok:
+            meeting.tags.append("distillatie-mislukt")
 
         opus_path = None
         if opus_future is not None:

@@ -253,7 +253,7 @@ def _stop_and_process(recorder, config, client_slug: str | None) -> None:
 
 def _run_pipeline(wav_path: Path, config, client_slug: str | None):
     """Run the full processing pipeline on a WAV file. Returns the Meeting object or None."""
-    from meetflow.extract.schema import Meeting, Participants, Recording, TranscriptSegment
+    from meetflow.extract.schema import Extraction, Meeting, Participants, Recording, TranscriptSegment
     from meetflow.integrations.crm import update_profile_with_meeting
     from meetflow.storage.audio import wav_to_opus
     from meetflow.storage.database import MeetingDB
@@ -363,9 +363,17 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
         )
         log.info("Opus transcode started in background")
 
-    # 4. Extract structured data via Claude Code CLI (runs parallel with opus)
+    # 4. Extract structured data via Claude Code CLI (runs parallel with opus). If extraction FAILS
+    #    (e.g. the Claude usage limit), do NOT lose the transcript: fall back to an empty extraction,
+    #    tag it, and still save + index. Re-run later (no re-transcribe) with `meetflow redistill <id>`.
     with _timed("extract"):
-        extraction = extract_meeting_data(segments_for_llm, config.extraction, client_context, language=primary_lang)
+        try:
+            extraction = extract_meeting_data(segments_for_llm, config.extraction, client_context, language=primary_lang)
+            extraction_ok = True
+        except Exception as e:  # noqa: BLE001 — a failed extraction must not lose the transcript
+            log.warning("Meeting extraction failed (%s); saving transcript, re-run `meetflow redistill %s`", e, meeting_id)
+            extraction = Extraction()
+            extraction_ok = False
 
     # 5. Build Meeting object
     meeting = Meeting(
@@ -396,6 +404,8 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
     meeting.participants.them = them
     if not diarized:
         meeting.tags.append("no-speech")  # explicit marker; is_junk quarantines it below anyway
+    if not extraction_ok:
+        meeting.tags.append("distillatie-mislukt")  # transcript kept; re-run `meetflow redistill <id>`
 
     # Collect opus result (blocks if still encoding)
     opus_path = None
@@ -495,6 +505,74 @@ def process(ctx: click.Context, wav_path: str, client_slug: str | None, kind: st
     # split("_") took the TIME as the slug (the "110000" bug). Leave it None -> "unknown",
     # which calendar enrichment can still upgrade to a real client slug.
     _run_pipeline(path, config, client_slug)
+
+
+@cli.command()
+@click.argument("meeting_id")
+@click.pass_context
+def redistill(ctx: click.Context, meeting_id: str) -> None:
+    """Re-run the LLM distillation on an ALREADY-transcribed recording — no re-record, no
+    re-transcribe. Use when extraction failed (e.g. the Claude usage limit tagged it
+    'distillatie-mislukt'): the transcript was kept, so this just re-distils it and rewrites
+    meeting.json / .md and the DB row. MEETING_ID is the folder name (e.g. 2026-07-06_1608).
+    """
+    import json as _json
+
+    config = ctx.obj["config"]
+    from meetflow.extract.schema import Meeting
+    from meetflow.storage.database import MeetingDB
+    from meetflow.storage.files import save_journal_markdown, save_meeting_json, save_meeting_markdown
+
+    json_path = None
+    for sub in ("meetings", config.journal.dirname, f"meetings/{config.hygiene.quarantine_dirname}"):
+        cand = config.data_dir / sub / meeting_id / "meeting.json"
+        if cand.exists():
+            json_path = cand
+            break
+    if json_path is None:
+        click.echo(f"meeting.json not found for {meeting_id}")
+        return
+
+    meeting = Meeting(**_json.loads(json_path.read_text(encoding="utf-8")))
+    if not meeting.transcript:
+        click.echo("No transcript to re-distil.")
+        return
+
+    segs = [{"speaker": s.speaker, "start": s.start, "end": s.end, "text": s.text} for s in meeting.transcript]
+    if meeting.kind == "journal":
+        from meetflow.extract.llm import extract_journal_data
+
+        journal = extract_journal_data(segs, config.extraction, language=meeting.language)
+        meeting.journal = journal
+        meeting.meeting_title = journal.title or meeting.meeting_title
+        meeting.extraction.meeting_title = journal.title
+        meeting.extraction.summary = journal.summary
+    else:
+        from meetflow.extract.llm import extract_meeting_data
+
+        meeting.extraction = extract_meeting_data(segs, config.extraction, language=meeting.language)
+        if meeting.extraction.meeting_title:
+            meeting.meeting_title = meeting.extraction.meeting_title
+    if "distillatie-mislukt" in meeting.tags:
+        meeting.tags.remove("distillatie-mislukt")
+
+    save_meeting_json(meeting, json_path.parent)
+    (save_journal_markdown if meeting.kind == "journal" else save_meeting_markdown)(meeting, json_path.parent)
+
+    audio_path = None
+    if meeting.recording and meeting.recording.opus_path:
+        audio_path = str(json_path.parent / meeting.recording.opus_path)
+    db = MeetingDB(config.data_dir / "meetflow.db")
+    db.index_meeting(meeting, str(json_path), audio_path)
+    db.close()
+
+    if meeting.kind == "journal":
+        from meetflow.journal import _rebuild_journal_index
+
+        _rebuild_journal_index(config)
+    else:
+        _rebuild_index(config)
+    click.echo(f"Re-distilled {meeting_id} ({meeting.kind}): {meeting.meeting_title}")
 
 
 @cli.command()
