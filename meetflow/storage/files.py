@@ -21,8 +21,13 @@ def _meeting_title(json_path: str | None, fallback: str) -> str:
     return data.get("meeting_title") or (data.get("extraction") or {}).get("meeting_title") or fallback
 
 
-_VENTURE_LABELS = {"houtcalc": "HoutCalc", "ververflow": "Agency (VerverFlow)", "": "Overig / ongetagd"}
-_VENTURE_ORDER = ["houtcalc", "ververflow", ""]
+_VENTURE_LABELS = {
+    "houtcalc": "HoutCalc",
+    "ververflow": "Agency (VerverFlow)",
+    "creator-partnerships": "Creator Partnerships (gearchiveerd)",  # retired venture; kept for history
+    "": "Overig / ongetagd",
+}
+_VENTURE_ORDER = ["houtcalc", "ververflow", "creator-partnerships", ""]
 
 
 def generate_index(meetings: list[dict], meetings_root: Path, quarantine_dirname: str = "_quarantine") -> Path:

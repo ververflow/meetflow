@@ -580,7 +580,7 @@ def redistill(ctx: click.Context, meeting_id: str) -> None:
 
 @cli.command()
 @click.argument("meeting_id")
-@click.option("--venture", type=click.Choice(["houtcalc", "ververflow", ""]), default=None, help="Set the venture axis")
+@click.option("--venture", default=None, help="Set the venture axis (houtcalc | ververflow | creator-partnerships | ...)")
 @click.option("--type", "type_", default=None,
               help="Interaction type: discovery|working-session|partner-sync|product-feedback|user-interview|reflection|brainstorm")
 @click.option("--counterparty", default=None, help="Set the counterparty slug (client/prospect/Rob)")
