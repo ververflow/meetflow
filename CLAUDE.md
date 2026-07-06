@@ -13,8 +13,53 @@ everything locally with full-text search.
 
 V1.1 worked on Windows. macOS port (Apple M5 Pro) is **LIVE and in daily use**: Phases 1–4a
 shipped and proven on-box (2026-06-08). Records both channels (mic "me" + CoreAudio tap "them"),
-transcribes, extracts, stores, searchable. Survives reboots. Only Phase 4b hardening remains —
-see **Remaining work** at the bottom. Day-to-day path: Ctrl+Alt+M → daemon → pipeline → archive.
+transcribes, extracts, stores, searchable. Survives reboots. Day-to-day path: Ctrl+Alt+M → daemon → pipeline → archive. **For the current
+state read the 2026-07-06 section directly below**; the phase history further down is the earlier
+record and AEC/Phase-4b is the only genuinely open item.
+
+## 2026-07-06 — lanes, organization, resilience (big session; READ THIS FIRST)
+
+**Three capture lanes now share the engine + store:**
+- **Meetings** (2+ people): Ctrl+Alt+M → daemon → stereo mic/tap → per-channel whisper-cli + VAD →
+  diarize → Sonnet extraction → store. `kind='meeting'` (Phases 1-4a, below).
+- **Journal / brainstorm** (solo, lane C, NEW): **Hyper+J** → daemon `journal` verb → recorder
+  `mic_only` (no tap, no diarization, every segment = "me") → whisper-cli (VAD + auto nl/en +
+  `max_context=0`) → a JOURNAL distillation (themes/insights/decisions/open-questions/todos/
+  notes_to_claude) via the journal system prompt → `kind='journal'`, stored in `<data>/journal/` +
+  `JOURNAL.md`, viewed at `~/journal`. New module `meetflow/journal.py` is a PARALLEL pipeline that
+  never branches into the meeting hot path. This is the spoken journal the brain harvests.
+- **Dictation** (text-to-cursor) is a SEPARATE tool in `~/macbook` (dictation.lua + the resident
+  whisper-server on :8771), NOT this repo — but it now shares the vocab SSOT and runs `-l auto` + VAD.
+
+**Output organization — orthogonal axes, not a folder tree.** `client_slug` used to conflate three
+things (venture, client, and even "journal" as a value). Split into: `kind` (meeting|journal) +
+`venture` (houtcalc | ververflow | creator-partnerships[retired] | "") + `type` (discovery |
+working-session | partner-sync | product-feedback | user-interview | reflection | brainstorm) +
+`client_slug` = just the counterparty. New meetings auto-set `venture` from the counterparty
+(`config.venture_for`, HoutCalc-slugs → houtcalc, else agency); journals are kind=journal (not a
+venture), default type=reflection. INDEX.md is now GROUPED PER VENTURE (a derived view over flat
+storage). DB gained `venture`/`type` columns (migrated on open, indexed). Re-tag any recording:
+`meetflow classify <id> --venture … --type … --counterparty …`.
+
+**Resilience (all live).**
+- The LLM step is NON-FATAL in BOTH lanes: on failure (e.g. the Claude usage limit) the transcript
+  is still saved + tagged `distillatie-mislukt`; recover with `meetflow redistill <id>` (re-distils
+  the SAVED transcript — no re-record, no re-transcribe). This fixed a real data-loss bug (a journal
+  lost its transcript when a Claude-limit crash hit AFTER transcription but BEFORE save; the audio
+  survived as opus, so it was recoverable via `process --kind journal`).
+- No-speech no longer strands orphan WAVs: meetings archive+quarantine, journals discard the silent clip.
+- The daemon runs the pipeline in a BACKGROUND THREAD, so the menubar stays live during processing and
+  a toggle pressed mid-processing no longer fires a surprise recording (the stale command is drained).
+- Anti-loop: `filters.collapse_repeated_segments` (deterministic backstop) + journal `max_context=0`
+  (A/B-proven; the old journal looped one sentence 17x because it had gone through the wrong engine).
+- FTS gained AFTER DELETE/UPDATE triggers + a one-time rebuild, so search no longer desyncs on re-index.
+
+**New CLI:** `journal` (toggle a solo session), `redistill <id>`, `classify <id> …`,
+`process --kind journal`. **New config:** `[journal]` (dirname, max_context), `venture_for`, whisper
+`fixups`/`fixups_brand`, `apply_vocab_ssot` (merges `~/.config/whisper/vocab.json` + `vocab.local.json`
+into the glossary + fixups at CLI startup — NOT in load_config, so tests keep an empty glossary).
+Fixups correct the transcript-of-record ("fair flow" → VerverFlow), not just the summary. Config
+defaults aligned to the template (sonnet, 48k). Recorder `__init__` dead-code bug fixed. 67 tests green.
 
 ## macOS port (Phases 1–4a DONE, 2026-06-08)
 
