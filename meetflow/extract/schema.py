@@ -65,8 +65,10 @@ class Recording(BaseModel):
 
 class Meeting(BaseModel):
     id: str
-    client_slug: str
+    client_slug: str  # the counterparty (client / prospect / Rob); "" for solo journals
     kind: str = "meeting"  # "meeting" (2+ people) or "journal" (solo brainstorm, lane C)
+    venture: str = ""  # "houtcalc" | "ververflow" | "" (journals / untagged) — the world it belongs to
+    type: str = ""  # interaction type: discovery | working-session | partner-sync | product-feedback | user-interview | reflection | brainstorm
     meeting_title: str = ""
     date: str
     start_time: str

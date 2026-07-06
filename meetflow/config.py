@@ -234,6 +234,23 @@ def load_config(path: Path | None = None) -> Config:
     return cfg
 
 
+# Which counterparty slugs belong to HoutCalc (the product) vs the agency. Everything else with a
+# real counterparty defaults to the agency; journals and untagged recordings stay "".
+_HOUTCALC_SLUGS = {"houtcalc", "rob", "rob-mulder"}
+
+
+def venture_for(client_slug: str | None, kind: str = "meeting") -> str:
+    """Infer the venture axis from the counterparty. Journaling is NOT a venture (returns "")."""
+    if kind == "journal":
+        return ""
+    s = (client_slug or "").strip().lower()
+    if s in _HOUTCALC_SLUGS:
+        return "houtcalc"
+    if not s or s == "unknown":
+        return ""  # untagged; classify later via `meetflow tag --venture`
+    return "ververflow"  # any known external counterparty = agency work
+
+
 _VOCAB_DIR = Path.home() / ".config" / "whisper"
 
 

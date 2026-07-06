@@ -402,6 +402,9 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
     if not them and cal_match and cal_match.them_names:
         them = cal_match.them_names[0]
     meeting.participants.them = them
+    from meetflow.config import venture_for
+
+    meeting.venture = venture_for(meeting.client_slug, "meeting")  # auto-tag the venture axis
     if not diarized:
         meeting.tags.append("no-speech")  # explicit marker; is_junk quarantines it below anyway
     if not extraction_ok:
@@ -573,6 +576,58 @@ def redistill(ctx: click.Context, meeting_id: str) -> None:
     else:
         _rebuild_index(config)
     click.echo(f"Re-distilled {meeting_id} ({meeting.kind}): {meeting.meeting_title}")
+
+
+@cli.command()
+@click.argument("meeting_id")
+@click.option("--venture", type=click.Choice(["houtcalc", "ververflow", ""]), default=None, help="Set the venture axis")
+@click.option("--type", "type_", default=None,
+              help="Interaction type: discovery|working-session|partner-sync|product-feedback|user-interview|reflection|brainstorm")
+@click.option("--counterparty", default=None, help="Set the counterparty slug (client/prospect/Rob)")
+@click.pass_context
+def classify(ctx: click.Context, meeting_id: str, venture: str | None, type_: str | None, counterparty: str | None) -> None:
+    """Set the organization axes (venture / type / counterparty) on a recording, then rewrite its
+    meeting.json + the DB row + the index. MEETING_ID is the folder name. Only given options change."""
+    import json as _json
+
+    config = ctx.obj["config"]
+    from meetflow.extract.schema import Meeting
+    from meetflow.storage.database import MeetingDB
+    from meetflow.storage.files import save_meeting_json
+
+    json_path = None
+    for sub in ("meetings", config.journal.dirname, f"meetings/{config.hygiene.quarantine_dirname}"):
+        cand = config.data_dir / sub / meeting_id / "meeting.json"
+        if cand.exists():
+            json_path = cand
+            break
+    if json_path is None:
+        click.echo(f"meeting.json not found for {meeting_id}")
+        return
+
+    meeting = Meeting(**_json.loads(json_path.read_text(encoding="utf-8")))
+    if venture is not None:
+        meeting.venture = venture
+    if type_ is not None:
+        meeting.type = type_
+    if counterparty is not None:
+        meeting.client_slug = counterparty
+
+    save_meeting_json(meeting, json_path.parent)
+    audio_path = None
+    if meeting.recording and meeting.recording.opus_path:
+        audio_path = str(json_path.parent / meeting.recording.opus_path)
+    db = MeetingDB(config.data_dir / "meetflow.db")
+    db.index_meeting(meeting, str(json_path), audio_path)
+    db.close()
+
+    if meeting.kind == "journal":
+        from meetflow.journal import _rebuild_journal_index
+
+        _rebuild_journal_index(config)
+    else:
+        _rebuild_index(config)
+    click.echo(f"{meeting_id}: venture={meeting.venture or '—'} type={meeting.type or '—'} counterparty={meeting.client_slug or '—'}")
 
 
 @cli.command()

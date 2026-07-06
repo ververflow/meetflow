@@ -21,12 +21,16 @@ def _meeting_title(json_path: str | None, fallback: str) -> str:
     return data.get("meeting_title") or (data.get("extraction") or {}).get("meeting_title") or fallback
 
 
+_VENTURE_LABELS = {"houtcalc": "HoutCalc", "ververflow": "Agency (VerverFlow)", "": "Overig / ongetagd"}
+_VENTURE_ORDER = ["houtcalc", "ververflow", ""]
+
+
 def generate_index(meetings: list[dict], meetings_root: Path, quarantine_dirname: str = "_quarantine") -> Path:
-    """Write INDEX.md — a reverse-chronological, scannable overview of all meetings.
+    """Write INDEX.md — a scannable overview of all meetings, GROUPED PER VENTURE (HoutCalc / Agency
+    / Overig), each row showing the interaction type + counterparty.
 
     Pure derived data (from the DB + each meeting.json), so it is always safe to rebuild.
-    Quarantined meetings (folder under `quarantine_dirname`) are excluded from the table but
-    counted in the footer so nothing is silently hidden.
+    Quarantined meetings (folder under `quarantine_dirname`) are excluded but counted in the footer.
     """
     listed, quarantined = [], 0
     for m in meetings:
@@ -36,23 +40,32 @@ def generate_index(meetings: list[dict], meetings_root: Path, quarantine_dirname
         else:
             listed.append(m)
 
+    by_venture: dict[str, list[dict]] = {}
+    for m in listed:
+        by_venture.setdefault(m.get("venture") or "", []).append(m)
+
     lines = [
         "# MeetFlow — meetings",
         "",
-        f"_{len(listed)} meetings · auto-generated, rebuild with `meetflow index`._",
+        f"_{len(listed)} meetings · gegroepeerd per venture · rebuild with `meetflow index`._",
         "",
-        "| Datum | Titel | Duur | Open acties | Map |",
-        "|---|---|---|---:|---|",
     ]
-    for m in listed:
-        mid = m["id"]
-        dur = m.get("duration_seconds") or 0
-        title = _meeting_title(m.get("json_path"), m.get("summary") or "").strip().replace("\n", " ")
-        if len(title) > 70:
-            title = title[:69] + "…"
-        open_a = m.get("open_actions") or 0
-        lines.append(f"| {m.get('date', '')} | {title or '—'} | {dur // 60}m | {open_a} | [`{mid}`]({mid}/) |")
-    lines.append("")
+    for v in _VENTURE_ORDER + [k for k in by_venture if k not in _VENTURE_ORDER]:
+        rows = by_venture.get(v)
+        if not rows:
+            continue
+        lines += [f"## {_VENTURE_LABELS.get(v, v or 'Overig')} · {len(rows)}", "",
+                  "| Datum | Type | Titel | Met | Acties | Map |", "|---|---|---|---|---:|---|"]
+        for m in rows:
+            mid = m["id"]
+            title = _meeting_title(m.get("json_path"), m.get("summary") or "").strip().replace("\n", " ")
+            if len(title) > 58:
+                title = title[:57] + "…"
+            lines.append(
+                f"| {m.get('date', '')} | {m.get('type') or '—'} | {title or '—'} | "
+                f"{m.get('client_slug') or '—'} | {m.get('open_actions') or 0} | [`{mid}`]({mid}/) |"
+            )
+        lines.append("")
     if quarantined:
         lines.append(f"_{quarantined} in quarantaine (zie `{quarantine_dirname}/`)._")
         lines.append("")

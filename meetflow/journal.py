@@ -122,8 +122,10 @@ def run_journal_pipeline(wav_path: Path, config):
         #    DB row + FTS search stay uniform; the rich content lives in .journal. No action_items.
         meeting = Meeting(
             id=journal_id,
-            client_slug="journal",
+            client_slug="",       # solo: no counterparty (kind='journal' is the marker)
             kind="journal",
+            venture="",           # journaling is not a venture (spans personal + business)
+            type="reflection",    # default; re-tag to 'brainstorm' via `meetflow tag`
             meeting_title=journal.title,
             date=date_str,
             start_time=start_time,

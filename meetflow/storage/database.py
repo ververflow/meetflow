@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS meetings (
     id TEXT PRIMARY KEY,
     client_slug TEXT,
     kind TEXT DEFAULT 'meeting',
+    venture TEXT DEFAULT '',
+    type TEXT DEFAULT '',
     date TEXT,
     duration_seconds INTEGER,
     summary TEXT,
@@ -102,6 +104,13 @@ class MeetingDB:
             cur.execute("ALTER TABLE meetings ADD COLUMN kind TEXT DEFAULT 'meeting'")
             self._conn.commit()
             log.info("Migrated: added meetings.kind (default 'meeting')")
+        # Orthogonal organization axes (2026-07-06): venture (houtcalc|ververflow|"") and type
+        # (interaction type), so client_slug can go back to meaning just the counterparty.
+        for col in ("venture", "type"):
+            if columns and col not in columns:
+                cur.execute(f"ALTER TABLE meetings ADD COLUMN {col} TEXT DEFAULT ''")
+                self._conn.commit()
+                log.info("Migrated: added meetings.%s", col)
         # One-time FTS repair (user_version-gated so it runs once): index_meeting deletes+reinserts
         # a meeting's segments with fresh rowids, and before the AFTER DELETE/UPDATE triggers existed
         # that orphaned rows in transcript_fts. Rebuild heals any existing drift.
@@ -122,8 +131,9 @@ class MeetingDB:
         cur = self._conn.cursor()
 
         cur.execute(
-            "INSERT OR REPLACE INTO meetings (id, client_slug, kind, date, duration_seconds, summary, json_path, audio_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (meeting.id, meeting.client_slug, getattr(meeting, "kind", "meeting"), meeting.date, meeting.duration_seconds, meeting.extraction.summary, json_path, audio_path),
+            "INSERT OR REPLACE INTO meetings (id, client_slug, kind, venture, type, date, duration_seconds, summary, json_path, audio_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (meeting.id, meeting.client_slug, getattr(meeting, "kind", "meeting"), getattr(meeting, "venture", ""),
+             getattr(meeting, "type", ""), meeting.date, meeting.duration_seconds, meeting.extraction.summary, json_path, audio_path),
         )
 
         # Clear old segments for re-indexing
@@ -177,7 +187,7 @@ class MeetingDB:
         cur = self._conn.cursor()
         cur.execute(
             """
-            SELECT m.id, m.client_slug, m.date, m.duration_seconds, m.summary, m.json_path,
+            SELECT m.id, m.client_slug, m.venture, m.type, m.date, m.duration_seconds, m.summary, m.json_path,
                    (SELECT COUNT(*) FROM action_items a
                     WHERE a.meeting_id = m.id AND a.status = 'open') AS open_actions
             FROM meetings m
