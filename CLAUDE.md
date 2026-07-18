@@ -11,13 +11,12 @@ everything locally with full-text search.
 
 ## Status
 
-V1.1 worked on Windows. macOS port (Apple M5 Pro) is **LIVE and in daily use**: Phases 1–4a
-shipped and proven on-box (2026-06-08). Records both channels (mic "me" + CoreAudio tap "them"),
-transcribes, extracts, stores, searchable. Survives reboots. Day-to-day path: Ctrl+Alt+M → daemon → pipeline → archive. **For the current
-state read the 2026-07-06 section directly below**; the phase history further down is the earlier
-record and AEC/Phase-4b is the only genuinely open item.
+The macOS port (Apple M5 Pro) is **LIVE and in daily use**: records both channels (mic "me" +
+CoreAudio tap "them"), transcribes, extracts, stores, searchable, survives reboots. Day-to-day
+path: Ctrl+Alt+M → daemon → pipeline → archive. AEC (Phase 4b) is the only genuinely open item;
+the technical build-history further down is reference for how each capability works.
 
-## 2026-07-06 — lanes, organization, resilience (big session; READ THIS FIRST)
+## Capture lanes, organization, resilience
 
 **Three capture lanes now share the engine + store:**
 - **Meetings** (2+ people): Ctrl+Alt+M → daemon → stereo mic/tap → per-channel whisper-cli + VAD →
@@ -61,7 +60,7 @@ into the glossary + fixups at CLI startup — NOT in load_config, so tests keep 
 Fixups correct the transcript-of-record ("fair flow" → VerverFlow), not just the summary. Config
 defaults aligned to the template (sonnet, 48k). Recorder `__init__` dead-code bug fixed. 67 tests green.
 
-## macOS port (Phases 1–4a DONE, 2026-06-08)
+## How the capture pipeline works (build-history reference)
 
 This tree lives at `~/code/tools/meetflow` (per Dani's structure rule: self-built tools
 share the `~/code/tools` repo). Confidential meeting data lives OUTSIDE the repo at
@@ -275,9 +274,6 @@ Reflecting on the first 8 real meetings drove an accuracy/enrichment pass (all P
    runs in `Recorder.__init__` at daemon start).
 3. **Clean up the legacy daily-path code** now unused on macOS: `listen`/`hotkey.py`/`tray.py`
    (pynput/pystray) and the Windows `uninstall` wording. Eliminate-before-automate.
-
-Done 2026-06-20: AEC fix (live), route auto-detect (live), `meetflow doctor`, `client_slug` hygiene,
-calendar enrichment, whisper glossary, junk quarantine, backfill.
 
 ## V2 roadmap (not built)
 
