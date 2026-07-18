@@ -67,7 +67,7 @@ This tree lives at `~/code/tools/meetflow` (per Dani's structure rule: self-buil
 share the `~/code/tools` repo). Confidential meeting data lives OUTSIDE the repo at
 `~/Library/Application Support/MeetFlow` (gitignored, Time-Machine only, never synced).
 
-Approved plan (4 phases): `~/.claude/plans/plan-fase-4-warm-rocket.md`. Day-to-day, Dani's
+Day-to-day, Dani's
 only action is **Ctrl+Alt+M** (start/stop); everything lands in one fixed dir; NO client
 tagging / CRM / Notion (he matches client→recording himself later). Extraction = **Sonnet**.
 
@@ -109,7 +109,6 @@ ONE manual step remains: the first Ctrl+Alt+M triggers the macOS **Microphone** 
 daemon's venv python — grant it once; after that recording works (and survives reboots).
 
 **Phase 4 split into 4a (tap + diarize fix) and 4b (AEC + route-detect + signed .app).**
-Full plan: `~/.claude/plans/plan-fase-4-warm-rocket.md`.
 
 **Phase 4a — DONE and PROVEN on-box (2026-06-08): real system audio captured.**
 - `swift-sidecar/` — a compiled CoreAudio process-tap app (`meetflow-capture`, bundled as
