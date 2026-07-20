@@ -25,7 +25,7 @@ launchd agent and the Hammerspoon trigger — lives in `~/macbook` (see "How it'
 > solo **journal / brainstorm** lane (Hyper+J, mic-only, `kind='journal'`, distilled + stored in
 > `~/journal`). Output is organized by venture/type (INDEX grouped per venture); a failed LLM step
 > keeps the transcript (`meetflow redistill <id>` to re-distil). Full current state is in `CLAUDE.md`
-> (the 2026-07-06 section). Records **two channels** for meetings — your mic
+> (the "Status" + "Capture lanes" sections). Records **two channels** for meetings — your mic
 > ("me") + the system audio via a CoreAudio process-tap ("them") — transcribes, extracts, and
 > archives, all locally and searchable. On speakers you'll hear a mild echo in the raw audio (the
 > mic also picks up the system sound), but the transcript is de-bleeded and clean; headphones
