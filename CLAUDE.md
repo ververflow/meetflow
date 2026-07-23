@@ -11,7 +11,7 @@ LIVE and in daily use on macOS (Apple M5 Pro): both channels captured (mic "me" 
 "them"), transcribed, extracted, stored, searchable, survives reboots. Day-to-day path:
 Ctrl+Alt+M → daemon → pipeline → archive. AEC is the only genuinely open capability (see below).
 
-This tree lives at `~/code/tools/meetflow` (self-built tools share the `~/code/tools` repo).
+This tree lives at `~/tools/meetflow` (self-built tools live in the `~/tools` drawer).
 Confidential meeting data lives OUTSIDE the repo at `~/Library/Application Support/MeetFlow`
 (gitignored, Time-Machine only, never synced). Extraction = **Sonnet**.
 

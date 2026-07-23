@@ -18,7 +18,7 @@ the transcript to Claude (Anthropic), the conversation text leaves your machine 
 for business use you also need a processor agreement with Anthropic. When recording starts MeetFlow
 beeps, shows a red menubar dot, and pops up an on-screen reminder to inform participants.
 
-Lives at `~/code/tools/meetflow` (one of Dani's self-built tools). Machine wiring — the
+Lives at `~/tools/meetflow` (one of Dani's self-built tools). Machine wiring — the
 launchd agent and the Hammerspoon trigger — lives in `~/macbook` (see "How it's wired").
 
 > **Status:** live and in daily use. Two lanes: **meetings** (Ctrl+Alt+M, 2-channel mic+tap) and a
@@ -29,8 +29,9 @@ launchd agent and the Hammerspoon trigger — lives in `~/macbook` (see "How it'
 > ("me") + the system audio via a CoreAudio process-tap ("them") — transcribes, extracts, and
 > archives, all locally and searchable. On speakers you'll hear a mild echo in the raw audio (the
 > mic also picks up the system sound), but the transcript is de-bleeded and clean; headphones
-> remove the echo. One item remains: capture-time echo-cancellation (`aec = "on"`) is implemented
-> but currently broken, so keep `aec = "auto"`. See `CLAUDE.md` → "Remaining work" for the rest.
+> remove the echo. One item remains: capture-time echo-cancellation is implemented
+> but must stay off (`aec = "off"` in `meetflow.local.toml`): VPIO cannot coexist with another app
+> owning the mic. See `CLAUDE.md` → "Remaining work" for the revival constraints and the rest.
 
 ## Pipeline
 
@@ -65,7 +66,7 @@ Ctrl+Alt+M → recording stops (Pop + ⏳)
 ## Setup (from scratch on a new Mac)
 
 ```sh
-cd ~/code/tools/meetflow
+cd ~/tools/meetflow
 uv venv --python 3.12
 uv pip install -e ".[dev]"
 
