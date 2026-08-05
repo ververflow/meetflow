@@ -113,7 +113,8 @@ release` + assemble & codesign the `.app`, system frameworks only, no Xcode).
 `capture/loopback.py` `darwin` branch launches `MeetFlowCapture.app` per meeting via `open -n …
 --args --out … --sample-rate 16000`, polls `capture-status.json` for the sidecar pid, stops it with
 SIGTERM, reads back `them.wav`. EVERY failure path (missing .app, open error, no pid, timeout,
-missing/empty WAV) returns an empty array → mic-only degrade. The Windows WASAPI path is untouched.
+missing/empty WAV) returns an empty array → mic-only degrade. The Windows WASAPI path is untouched
+dead weight, a removal candidate: macOS is the only live target.
 
 **TCC reality (the hard-won part).** The tap is gated by `kTCCServiceAudioCapture`, SEPARATE from
 Screen Recording, with NO Settings toggle — it must be requested via the private TCC SPI
