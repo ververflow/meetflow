@@ -97,9 +97,13 @@ def cli(ctx: click.Context, config_path: str | None) -> None:
     ctx.ensure_object(dict)
     path = Path(config_path) if config_path else None
     from meetflow.config import apply_vocab_ssot
+    from meetflow.transcribe.filters import set_whole_artifacts
 
     ctx.obj["config"] = load_config(path)
     apply_vocab_ssot(ctx.obj["config"])  # merge the shared vocab/fixups SSOT into whisper config
+    # The whole-segment artifact list is module state in filters (strip_hallucinations runs deep in
+    # the segment loop with no config in hand), so hand it over here, once, right after the merge.
+    set_whole_artifacts(ctx.obj["config"].whisper.hallucinations_whole)
 
 
 @cli.command()

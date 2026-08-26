@@ -3,7 +3,25 @@ from __future__ import annotations
 
 import numpy as np
 
-from meetflow.transcribe.filters import is_low_confidence, strip_hallucinations
+from meetflow.transcribe.filters import is_low_confidence, set_whole_artifacts, strip_hallucinations
+
+
+def test_whole_segment_artifact_is_dropped():
+    """A segment that IS an artifact goes entirely; punctuation and case are ignored."""
+    set_whole_artifacts(["amara org", "abonneer"])
+    try:
+        assert strip_hallucinations("Amara.org!") == ""
+        assert strip_hallucinations("  abonneer  ") == ""
+        # Real speech that merely CONTAINS the phrase survives the whole-segment check.
+        assert "abonneer" in strip_hallucinations("ik abonneer me op die nieuwsbrief")
+    finally:
+        set_whole_artifacts([])
+
+
+def test_whole_segment_list_empty_is_a_no_op():
+    """SSOT unread → the substring set alone runs, exactly as before."""
+    set_whole_artifacts([])
+    assert strip_hallucinations("abonneer") == "abonneer"
 
 
 def test_strip_known_hallucinations():

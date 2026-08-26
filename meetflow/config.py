@@ -82,6 +82,9 @@ class WhisperConfig:
     # apply_vocab_ssot). fixups need a word boundary on BOTH sides; fixups_brand only BEFORE.
     fixups: list = field(default_factory=list)
     fixups_brand: list = field(default_factory=list)
+    # Whole-segment hallucination artifacts, same SSOT, same list the dictation lane uses. Handed
+    # to transcribe.filters.set_whole_artifacts() at CLI startup.
+    hallucinations_whole: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -256,7 +259,8 @@ _VOCAB_DIR = Path.home() / ".config" / "whisper"
 
 def apply_vocab_ssot(config: Config, vocab_dir: Path | None = None) -> None:
     """Merge the shared vocab SSOT into config.whisper: terms → glossary (proper-noun priming),
-    plus the fixup lists (post-transcription corrections).
+    the fixup lists (post-transcription corrections), and the whole-segment hallucination list
+    (the same artifacts the dictation lane drops, so neither lane can learn one the other misses).
 
     Two files: vocab.json (own brands/tools, committed) and vocab.local.json (client names,
     gitignored) — same overlay pattern as meetflow.local.toml. Called once at CLI startup, NOT
@@ -267,6 +271,7 @@ def apply_vocab_ssot(config: Config, vocab_dir: Path | None = None) -> None:
     terms = list(config.whisper.glossary)
     fixups = list(getattr(config.whisper, "fixups", []) or [])
     fixups_brand = list(getattr(config.whisper, "fixups_brand", []) or [])
+    halluc = list(getattr(config.whisper, "hallucinations_whole", []) or [])
     for name in ("vocab.json", "vocab.local.json"):
         p = vdir / name
         if not p.exists():
@@ -278,6 +283,8 @@ def apply_vocab_ssot(config: Config, vocab_dir: Path | None = None) -> None:
         terms += [t for t in data.get("terms", []) if isinstance(t, str)]
         fixups += [x for x in data.get("fixups", []) if isinstance(x, list) and len(x) == 2]
         fixups_brand += [x for x in data.get("fixups_brand", []) if isinstance(x, list) and len(x) == 2]
+        halluc += [h for h in data.get("hallucinations_whole", []) if isinstance(h, str) and h.strip()]
     config.whisper.glossary = list(dict.fromkeys(terms))
     config.whisper.fixups = fixups
     config.whisper.fixups_brand = fixups_brand
+    config.whisper.hallucinations_whole = list(dict.fromkeys(halluc))

@@ -29,12 +29,36 @@ HALLUCINATION_PATTERNS: set[str] = {
     "unmute yourself",
 }
 
+# WHOLE-SEGMENT artifacts, from the shared vocab SSOT (~/.config/whisper/vocab.json,
+# `hallucinations_whole`) — the same list the dictation lane matches on a whole clip. A segment is
+# dropped only when its ENTIRE letters-core equals one of these, so unlike the substring set above
+# it can never eat a fragment out of real speech. Populated by set_whole_artifacts() at CLI startup;
+# empty means "SSOT unread", and then only the substring set above runs, exactly as before.
+_WHOLE_ARTIFACTS: set[str] = set()
+
+_CORE_STRIP = re.compile(r"[\d\W_]+")
+
+
+def set_whole_artifacts(phrases: list[str] | None) -> None:
+    """Install the whole-segment artifact list from the shared SSOT. Clear with []."""
+    global _WHOLE_ARTIFACTS
+    _WHOLE_ARTIFACTS = {p.strip().lower() for p in (phrases or []) if p and p.strip()}
+
+
+def _letters_core(text: str) -> str:
+    """Lowercase, digits and punctuation collapsed to single spaces — the form SSOT entries use."""
+    return _CORE_STRIP.sub(" ", text.lower()).strip()
+
 # Pattern for repeated phrases (Whisper sometimes loops)
 _REPEAT_PATTERN = re.compile(r"(.{10,}?)\1{2,}", re.IGNORECASE)
 
 
 def strip_hallucinations(text: str) -> str:
     """Remove known Whisper hallucination artifacts from text."""
+    # Whole-segment check first, on the UNTOUCHED text: a segment that is nothing but an artifact
+    # goes entirely, without the substring pass having to reconstruct that from the leftovers.
+    if _WHOLE_ARTIFACTS and _letters_core(text) in _WHOLE_ARTIFACTS:
+        return ""
     text_lower = text.lower()
     for pattern in HALLUCINATION_PATTERNS:
         while pattern in text_lower:

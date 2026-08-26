@@ -46,6 +46,7 @@ def test_apply_vocab_ssot_merges(tmp_path):
         "terms": ["HoutCalc", "VerverFlow"],
         "fixups": [["fair flow", "VerverFlow"]],
         "fixups_brand": [["houtcalc", "HoutCalc"]],
+        "hallucinations_whole": ["amara org"],
     }))
     (tmp_path / "vocab.local.json").write_text(json.dumps({"terms": ["Burg"], "fixups": [], "fixups_brand": []}))
     cfg = Config()
@@ -53,6 +54,7 @@ def test_apply_vocab_ssot_merges(tmp_path):
     assert "HoutCalc" in cfg.whisper.glossary and "Burg" in cfg.whisper.glossary
     assert ["fair flow", "VerverFlow"] in cfg.whisper.fixups
     assert ["houtcalc", "HoutCalc"] in cfg.whisper.fixups_brand
+    assert cfg.whisper.hallucinations_whole == ["amara org"]
 
 
 def test_apply_vocab_ssot_tolerates_missing(tmp_path):
