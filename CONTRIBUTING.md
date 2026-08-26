@@ -21,7 +21,7 @@ Requires:
 ## Configure locally without polluting git
 
 ```sh
-cp meetflow.toml meetflow.local.toml   # set my_name + absolute model paths; it overrides meetflow.toml
+cp meetflow.toml meetflow.local.toml   # set my_name + absolute model paths; it REPLACES meetflow.toml, so keep every section
 ```
 
 `*.local.toml`, `data/`, `*.opus`, `*.wav`, `*.log` are gitignored — confidential meeting data

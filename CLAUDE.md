@@ -60,8 +60,12 @@ CLI: `journal` (toggle a solo session), `redistill <id>`, `classify <id> …`, `
 journal`, `index`, `classify`/`tag`, `doctor` (preflight), `backfill` (re-extract titles + repair
 old mojibake + reconcile slug). Config: `[journal]` (dirname, max_context), `venture_for`, whisper
 `fixups`/`fixups_brand`, `apply_vocab_ssot` (merges `~/.config/whisper/vocab.json` +
-`vocab.local.json` into glossary + fixups at CLI startup — NOT in load_config, so tests keep an
-empty glossary). Fixups correct the transcript-of-record ("fair flow" → VerverFlow), not just the
+`vocab.local.json` into glossary + fixups + `hallucinations_whole` at CLI startup — NOT in
+load_config, so tests keep an empty glossary; the CLI then hands the last one to
+`filters.set_whole_artifacts`, which is module state because `strip_hallucinations` runs deep in the
+segment loop with no config in hand). The machine's own config is `local_config_path()`:
+`~/.config/meetflow/meetflow.local.toml` wins, the in-repo copy is the fallback, and it REPLACES
+`meetflow.toml` rather than layering over it. Fixups correct the transcript-of-record ("fair flow" → VerverFlow), not just the
 summary. Extraction defaults: sonnet, 48k context.
 
 ## Architecture
