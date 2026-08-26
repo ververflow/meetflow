@@ -8,7 +8,20 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).parent.parent
 _DEFAULT_CONFIG = _REPO_ROOT / "meetflow.toml"
-_LOCAL_CONFIG = _REPO_ROOT / "meetflow.local.toml"
+# The machine's own config, preferred from ~/.config/meetflow so it can be owned and versioned by
+# whatever manages the machine, and does not have to live untracked inside this repo. Same shape as
+# _VOCAB_DIR below. The in-repo path stays as the fallback, so a plain clone keeps working.
+_XDG_LOCAL_CONFIG = Path.home() / ".config" / "meetflow" / "meetflow.local.toml"
+_REPO_LOCAL_CONFIG = _REPO_ROOT / "meetflow.local.toml"
+
+
+def local_config_path() -> Path:
+    """The machine config actually in force: ~/.config/meetflow wins, the in-repo copy is fallback.
+
+    Resolved per call, not at import, so it reports what the NEXT load will read rather than what
+    happened to be true when the process started.
+    """
+    return _XDG_LOCAL_CONFIG if _XDG_LOCAL_CONFIG.exists() else _REPO_LOCAL_CONFIG
 
 
 @dataclass
@@ -176,10 +189,11 @@ class Config:
 
 
 def load_config(path: Path | None = None) -> Config:
-    """Load config from TOML. If meetflow.local.toml exists it overrides
-    meetflow.toml (so you can keep personal settings out of git)."""
+    """Load config from TOML: the machine config (see local_config_path) if it exists, else the
+    committed template. Note it REPLACES the template rather than layering over it."""
     if path is None:
-        path = _LOCAL_CONFIG if _LOCAL_CONFIG.exists() else _DEFAULT_CONFIG
+        local = local_config_path()
+        path = local if local.exists() else _DEFAULT_CONFIG
     if not path.exists():
         return Config()
 

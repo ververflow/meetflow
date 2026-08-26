@@ -172,7 +172,16 @@ class LoopbackStream:
         cfg = self._capture_config
         app = self._app_bundle(cfg.sidecar_path if cfg else "")
         if not app or not Path(app).exists():
-            log.info("CoreAudio sidecar .app not found (%s); recording mic-only.", app or "unset")
+            # A CONFIGURED backend whose binary is missing is a broken machine, not a graceful
+            # degrade: the recording still succeeds and still looks normal, so nothing tells you
+            # the other half of the conversation was never captured. Measured 2026-08-26: a stale
+            # sidecar_path after a repo move cost three meetings, one of them a 32-minute client
+            # call recorded at me=557, them=0, and the only trace was this line at INFO level.
+            # So say it out loud, at the START of the recording, while aborting still costs nothing.
+            log.error("CoreAudio sidecar .app not found (%s); recording MIC-ONLY.", app or "unset")
+            from meetflow.notify import notify
+
+            notify("Alleen jouw microfoon", "De systeemaudio-tap ontbreekt: de andere kant wordt NIET opgenomen.")
             self._active = False
             return
 

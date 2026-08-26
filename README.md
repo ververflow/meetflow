@@ -18,8 +18,10 @@ the transcript to Claude (Anthropic), the conversation text leaves your machine 
 for business use you also need a processor agreement with Anthropic. When recording starts MeetFlow
 beeps, shows a red menubar dot, and pops up an on-screen reminder to inform participants.
 
-Lives at `~/tools/meetflow` (one of Dani's self-built tools). Machine wiring — the
-launchd agent and the Hammerspoon trigger — lives in `~/macbook` (see "How it's wired").
+Lives at `~/tools/meetflow` (one of Dani's self-built tools). Machine wiring lives in `~/macbook`:
+the launchd agent, the Hammerspoon trigger, the shared whisper vocabulary, and this machine's own
+`meetflow.local.toml` (see "How it's wired" and "Configuration"). The split is by audience, not by
+feel: what a stranger could clone and run is here, what is true of this one Mac is there.
 
 > **Status:** live and in daily use. Two lanes: **meetings** (Ctrl+Alt+M, 2-channel mic+tap) and a
 > solo **journal / brainstorm** lane (Hyper+J, mic-only, `kind='journal'`, distilled + stored in
@@ -74,8 +76,9 @@ uv pip install -e ".[dev]"
 curl -L -o ~/.local/share/whisper-models/ggml-silero-v6.2.0.bin \
   https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin
 
-# Local config (machine-specific, gitignored):
-cp meetflow.toml meetflow.local.toml   # then set my_name + absolute model paths
+# Machine config (see "Configuration" for the two locations and which one wins):
+mkdir -p ~/.config/meetflow
+cp meetflow.toml ~/.config/meetflow/meetflow.local.toml   # then set my_name + absolute model paths
 ```
 
 ### How it's wired (machine-as-code, in `~/macbook`)
@@ -138,8 +141,16 @@ path is the daemon + Ctrl+Alt+M.)
 
 ## Configuration
 
-`meetflow.toml` is the committed template; copy to `meetflow.local.toml` (gitignored) for
-machine-specific overrides. Key sections:
+`meetflow.toml` is the committed template; copy to `meetflow.local.toml` for the machine's own
+settings. It REPLACES the template rather than layering over it, so copy the whole file.
+
+Two locations, in this order: **`~/.config/meetflow/meetflow.local.toml`** wins, and the in-repo
+`meetflow.local.toml` (gitignored) is the fallback. Prefer the first if something other than this
+repo manages your machine — the config then lives with the rest of your machine's configuration and
+survives moving, re-cloning or rebuilding the checkout, which an untracked file inside the repo does
+not.
+
+Key sections:
 
 - `[general] my_name`, `data_dir`
 - `[whisper] backend = "cli"`, `model_path`, `vad_model`, `vad_*` — the transcription engine

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Captures BOTH channels via the sidecar: them (system tap) + me (mic, AEC on speakers).
 set -u
-cd /Users/daniverver/code/tools/meetflow
+# Repo-relative, like build.sh. An absolute path here died silently on a repo move: `set -u`
+# does not abort on a failed `cd`, so the run continued from the wrong directory.
+cd "$(dirname "$0")/.." || exit 1
 pkill -9 -f "MeetFlowCapture" 2>/dev/null; sleep 0.3   # clean slate
 APP="swift-sidecar/MeetFlowCapture.app"
 T="$(mktemp -d)"; THEM="$T/them.wav"; ME="$T/me.wav"; ST="$T/capture-status.json"
