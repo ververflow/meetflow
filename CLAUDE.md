@@ -186,11 +186,3 @@ stays off.
 - Cross-channel dedup is good but not perfect: with heavy speaker bleed an occasional
   duplicate/mis-attributed line can survive. Quiet tap audio is intentionally kept-both.
 - Transcription is NL + EN by default; add codes to `[whisper].languages`.
-
-## Not built (V2 ideas)
-
-- Pre-meeting briefs (CRM + previous-meeting context fed to Claude before the call)
-- Cross-meeting analytics ("80% of clients mention SEO")
-- Meeting → proposal pipeline (Jinja2 templates fed by extraction output)
-- Bidirectional commitment tracking across meetings
-- Semantic search (vector embeddings on top of FTS5)
