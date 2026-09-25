@@ -17,6 +17,7 @@ and both backends return the same ``Segment`` list with start/end + text + langu
 from __future__ import annotations
 
 import io
+import dataclasses
 import json
 import logging
 import math
@@ -31,7 +32,13 @@ import numpy as np
 import soundfile as sf
 
 from meetflow.config import WhisperConfig
-from meetflow.transcribe.filters import collapse_repeated_segments, is_low_confidence, strip_hallucinations
+from meetflow.transcribe.filters import (
+    LOOP_RETRY_RUN,
+    collapse_repeated_segments,
+    find_loops,
+    is_low_confidence,
+    strip_hallucinations,
+)
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +56,7 @@ class Segment:
     end: float
     text: str
     language: str
+    looped: int = 0  # >0: a collapsed decoder loop of this many copies; the span was not transcribed
 
 
 # ─── shared helpers ────────────────────────────────────────────────────────────
@@ -178,7 +186,7 @@ class _CliBackend:
                 raise RuntimeError(f"VAD enabled but model not found at {vm!r}. Set [whisper].vad_model or vad_enabled=false.")
         log.info("whisper-cli backend ready (%s, vad=%s)", cli, getattr(config, "vad_enabled", True))
 
-    def _build_cmd(self, config: WhisperConfig, wav: Path, out_base: Path, language: str | None) -> list[str]:
+    def _build_cmd(self, config: WhisperConfig, wav: Path, out_base: Path, language: str | None, prompt: bool = True) -> list[str]:
         cmd = [
             getattr(config, "cli_path", "/opt/homebrew/bin/whisper-cli"),
             "-m", str(Path(getattr(config, "model_path", "")).expanduser()),
@@ -192,9 +200,9 @@ class _CliBackend:
             "-oj", "-ojf",
             "-of", str(out_base),
         ]
-        prompt = build_prompt(config, language)
-        if prompt:
-            cmd += ["--prompt", prompt]
+        text = build_prompt(config, language) if prompt else ""
+        if text:
+            cmd += ["--prompt", text]
         if getattr(config, "vad_enabled", True):
             cmd += [
                 "--vad",
@@ -225,13 +233,14 @@ class _CliBackend:
         ]
         return sum(lps) / len(lps) if lps else 0.0
 
-    def transcribe(self, audio: np.ndarray, config: WhisperConfig, language: str | None) -> list[Segment]:
+    def _decode(self, audio: np.ndarray, config: WhisperConfig, language: str | None, prompt: bool = True) -> list[Segment]:
+        """One whisper-cli run over ``audio``: filtered segments, NOT yet loop-collapsed."""
         timeout = max(600, int(len(audio) / SAMPLE_RATE * 1.5) + 120)
         with self._lock, tempfile.TemporaryDirectory(prefix="meetflow-") as tmp:
             wav = Path(tmp) / "channel.wav"
             out_base = Path(tmp) / "out"
             sf.write(str(wav), audio, SAMPLE_RATE, subtype="PCM_16")
-            cmd = self._build_cmd(config, wav, out_base, language)
+            cmd = self._build_cmd(config, wav, out_base, language, prompt=prompt)
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             if proc.returncode != 0:
                 raise RuntimeError(f"whisper-cli failed ({proc.returncode}): {proc.stderr[-300:]}")
@@ -257,8 +266,43 @@ class _CliBackend:
                         language=label,
                     )
                 )
-        results = collapse_repeated_segments(results)
-        log.info("Transcribed %d segments in %s via whisper-cli (vad=%s)", len(results), label, getattr(config, "vad_enabled", True))
+        return results
+
+    def _redecode_loops(self, audio: np.ndarray, segs: list[Segment], config: WhisperConfig, language: str | None) -> list[Segment]:
+        """Re-decode every window where the decoder got stuck, and splice the result in.
+
+        The retry runs on just that slice, without the prompt (a primed prompt can seed the loop)
+        and with an entropy threshold so the temperature fallback fires on repetition. A window
+        that loops again is left to collapse_repeated_segments, which marks it ``looped``.
+        """
+        loops = find_loops(segs)
+        if not loops:
+            return segs
+        retry_cfg = dataclasses.replace(config, max_context=0, entropy_thold=config.entropy_thold or 2.4)
+        for start, end, run in loops:
+            log.warning("decoder loop: %d copies over %.0f-%.0fs; re-decoding that window", run, start, end)
+            lo = max(0, int(start * SAMPLE_RATE))
+            hi = min(len(audio), int(end * SAMPLE_RATE) + SAMPLE_RATE)
+            try:
+                fresh = self._decode(audio[lo:hi], retry_cfg, language, prompt=False)
+            except Exception as e:  # noqa: BLE001 — a failed retry keeps the looped window, marked
+                log.warning("re-decode of %.0f-%.0fs failed (%s); keeping the loop marker", start, end, e)
+                continue
+            for f in fresh:
+                f.start += lo / SAMPLE_RATE
+                f.end += lo / SAMPLE_RATE
+            segs = [s for s in segs if not (start <= s.start < end)] + fresh
+            segs.sort(key=lambda s: s.start)
+        return segs
+
+    def transcribe(self, audio: np.ndarray, config: WhisperConfig, language: str | None) -> list[Segment]:
+        segs = self._decode(audio, config, language)
+        segs = self._redecode_loops(audio, segs, config, language)
+        results = collapse_repeated_segments(segs)
+        for r in results:
+            if r.looped >= LOOP_RETRY_RUN:
+                log.warning("untranscribed span %.0f-%.0fs: decoder still looped (%d copies)", r.start, r.end, r.looped)
+        log.info("Transcribed %d segments in %s via whisper-cli (vad=%s)", len(results), results[0].language if results else "-", getattr(config, "vad_enabled", True))
         return results
 
 

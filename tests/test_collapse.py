@@ -14,7 +14,9 @@ from pathlib import Path
 
 from meetflow.config import WhisperConfig
 from meetflow.transcribe.engine import _CliBackend
-from meetflow.transcribe.filters import _norm, collapse_repeated_segments
+import numpy as np
+
+from meetflow.transcribe.filters import _norm, collapse_repeated_segments, find_loops
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "journal_loops.json"
 
@@ -113,20 +115,85 @@ def test_empty_passthrough():
     assert collapse_repeated_segments([]) == []
 
 
-# ── the decode command stays byte-identical for meetings by default ──────────────
+# ── the anti-loop decode knobs ──────────────────────────────────────────────────
 
 
 def _cmd(cfg: WhisperConfig) -> list[str]:
     return _CliBackend()._build_cmd(cfg, Path("/tmp/x.wav"), Path("/tmp/out"), "nl")
 
 
-def test_meeting_command_byte_identical_by_default():
+def test_meetings_decode_without_carried_context_by_default():
+    # 2026-09-24: with the model-default context an hour-long call looped one sentence 1530x.
     cmd = _cmd(WhisperConfig())
-    assert "-mc" not in cmd, "default config must not emit -mc (would change the meeting command)"
+    assert cmd[cmd.index("-mc") + 1] == "0"
     assert "-et" not in cmd, "default config must not emit -et"
+
+
+def test_model_default_context_emits_no_flag():
+    assert "-mc" not in _cmd(WhisperConfig(max_context=-1))
+
+
+def test_retry_command_drops_the_prompt():
+    cfg = WhisperConfig(glossary=["HoutCalc"])
+    assert "--prompt" in _CliBackend()._build_cmd(cfg, Path("/tmp/x.wav"), Path("/tmp/out"), "nl")
+    assert "--prompt" not in _CliBackend()._build_cmd(cfg, Path("/tmp/x.wav"), Path("/tmp/out"), "nl", prompt=False)
 
 
 def test_journal_params_emit_flags():
     cmd = _cmd(WhisperConfig(max_context=0, entropy_thold=2.8))
     assert cmd[cmd.index("-mc") + 1] == "0"
     assert cmd[cmd.index("-et") + 1] == "2.8"
+
+
+# ── long loops: found, re-decoded, and marked when they survive ─────────────────
+
+
+def _loop(start: float, n: int, text: str = "Je moet echt op de hoogte gaan.") -> list[_Seg]:
+    return [_Seg(start + i, start + i + 1, text) for i in range(n)]
+
+
+def test_find_loops_reports_long_runs_only():
+    segs = [_Seg(0, 1, "a"), *_loop(1, 3, "ja."), *_loop(10, 25), _Seg(40, 41, "b")]
+    assert find_loops(segs) == [(10, 35, 25)]
+
+
+def test_collapse_marks_the_survivor_of_a_loop():
+    from meetflow.transcribe.engine import Segment
+
+    segs = [Segment(i, i + 1, "zelfde zin hier.", "nl") for i in range(30)]
+    out = collapse_repeated_segments(segs)
+    assert len(out) == 1 and out[0].looped == 30 and out[0].end == 30
+
+
+def test_redecode_splices_the_fresh_window_in():
+    from meetflow.transcribe.engine import SAMPLE_RATE, Segment
+
+    backend = _CliBackend()
+    seen = {}
+
+    def fake_decode(audio, config, language, prompt=True):
+        seen.update(n=len(audio), prompt=prompt, mc=config.max_context, et=config.entropy_thold)
+        return [Segment(0.5, 2.0, "wat er echt gezegd werd", "nl")]
+
+    backend._decode = fake_decode
+    audio = np.zeros(100 * SAMPLE_RATE, dtype=np.float32)
+    segs = [Segment(1, 2, "voor", "nl")] + [Segment(10 + i, 11 + i, "lus.", "nl") for i in range(25)] + [Segment(50, 51, "na", "nl")]
+    out = backend._redecode_loops(audio, segs, WhisperConfig(), "nl")
+    assert [s.text for s in out] == ["voor", "wat er echt gezegd werd", "na"]
+    assert out[1].start == 10.5
+    assert seen["prompt"] is False and seen["mc"] == 0 and seen["et"]
+
+
+def test_meeting_md_warns_about_gaps(tmp_path):
+    from meetflow.extract.schema import Meeting, Participants
+    from meetflow.notify import gap_note
+    from meetflow.storage.files import save_meeting_markdown
+
+    m = Meeting(id="x", client_slug="rob", date="2026-09-24", start_time="19:14", end_time="20:19",
+                duration_seconds=3940, language="nl", participants=Participants(me="Dani"),
+                transcript_gaps=[[1200.0, 2940.0]])
+    md = save_meeting_markdown(m, tmp_path).read_text()
+    assert "Transcript onvolledig" in md and "20:00-49:00" in md
+    assert "29 min" in gap_note(m)
+    m.transcript_gaps = []
+    assert gap_note(m) == ""

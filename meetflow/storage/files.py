@@ -93,6 +93,10 @@ def save_meeting_json(meeting: Meeting, meeting_dir: Path) -> Path:
     return json_path
 
 
+def _mmss(seconds: float) -> str:
+    return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+
 def save_meeting_markdown(meeting: Meeting, meeting_dir: Path) -> Path:
     """Write meeting.md — human-readable summary."""
     md_path = meeting_dir / "meeting.md"
@@ -108,6 +112,15 @@ def save_meeting_markdown(meeting: Meeting, meeting_dir: Path) -> Path:
         f"**Language:** {meeting.language}",
         f"**Participants:** {me_name} + {them_name}",
         "",
+    ]
+    if meeting.transcript_gaps:
+        spans = ", ".join(f"{_mmss(s)}-{_mmss(e)}" for s, e in meeting.transcript_gaps)
+        lines += [
+            f"> **Transcript onvolledig:** whisper bleef hangen in een lus; de spraak op {spans} ontbreekt. "
+            f"De opname is compleet: `meetflow retranscribe {meeting.id}`.",
+            "",
+        ]
+    lines += [
         "## Summary",
         meeting.extraction.summary,
         "",

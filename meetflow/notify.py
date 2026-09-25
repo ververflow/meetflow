@@ -43,3 +43,12 @@ def _notify_macos(title: str, message: str) -> None:
         log.info("Notification: %s — %s", title, message[:80])
     except Exception as e:
         log.warning("osascript notification failed: %s", e)
+
+
+def gap_note(meeting) -> str:
+    """Notification line for an incomplete transcript (see Meeting.transcript_gaps); "" when complete."""
+    gaps = getattr(meeting, "transcript_gaps", None)
+    if not gaps:
+        return ""
+    minutes = max(1, round(sum(e - s for s, e in gaps) / 60))
+    return f"\n⚠ transcript mist ~{minutes} min (whisper-lus): meetflow retranscribe '{meeting.id}'"

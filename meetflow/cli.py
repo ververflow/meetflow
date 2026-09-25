@@ -151,7 +151,7 @@ def listen(ctx: click.Context, client_slug: str | None) -> None:
     from meetflow.capture.hotkey import HotkeyListener, beep_done, beep_error, beep_ready, beep_start, beep_stop
     from meetflow.capture.recorder import Recorder
     from meetflow.capture.tray import TrayIcon
-    from meetflow.notify import notify, set_tray
+    from meetflow.notify import gap_note, notify, set_tray
     import threading
 
     recorder = Recorder(config)
@@ -206,7 +206,7 @@ def listen(ctx: click.Context, client_slug: str | None) -> None:
                         n_actions = len(meeting.extraction.action_items.i_owe_them) + len(meeting.extraction.action_items.they_owe_me)
                         notify(
                             f"Meeting opgeslagen ({meeting.duration_seconds // 60}m {meeting.duration_seconds % 60}s, {n_seg} segmenten)",
-                            f"{summary}" + (f"\n{n_actions} actiepunten" if n_actions else ""),
+                            f"{summary}" + (f"\n{n_actions} actiepunten" if n_actions else "") + gap_note(meeting),
                         )
                     else:
                         notify("Meeting opgeslagen", "Geen spraak gedetecteerd")
@@ -413,6 +413,7 @@ def _run_pipeline(wav_path: Path, config, client_slug: str | None):
         meeting.tags.append("no-speech")  # explicit marker; is_junk quarantines it below anyway
     if not extraction_ok:
         meeting.tags.append("distillatie-mislukt")  # transcript kept; re-run `meetflow redistill <id>`
+    _mark_gaps(meeting, diarized)
 
     # Collect opus result (blocks if still encoding)
     opus_path = None
@@ -514,6 +515,81 @@ def process(ctx: click.Context, wav_path: str, client_slug: str | None, kind: st
     _run_pipeline(path, config, client_slug)
 
 
+def _find_meeting_json(config, meeting_id: str) -> Path | None:
+    for sub in ("meetings", config.journal.dirname, f"meetings/{config.hygiene.quarantine_dirname}"):
+        cand = config.data_dir / sub / meeting_id / "meeting.json"
+        if cand.exists():
+            return cand
+    return None
+
+
+@cli.command()
+@click.argument("meeting_id")
+@click.pass_context
+def retranscribe(ctx: click.Context, meeting_id: str) -> None:
+    """Transcribe a saved meeting again from its archived recording, then re-distil it.
+
+    For a transcript with holes (tag 'transcript-onvolledig', or one from before the anti-loop
+    fix): the opus holds the whole call. The old meeting.json is kept beside it as
+    meeting.pre-retranscribe.json. MEETING_ID is the folder name.
+    """
+    import json as _json
+    import shutil
+    import subprocess
+    import tempfile
+
+    config = ctx.obj["config"]
+    from meetflow.extract.schema import Meeting, TranscriptSegment
+    from meetflow.storage.files import save_meeting_json
+    from meetflow.text import apply_fixups
+    from meetflow.transcribe.diarize import transcribe_stereo
+
+    json_path = _find_meeting_json(config, meeting_id)
+    if json_path is None:
+        click.echo(f"meeting.json not found for {meeting_id}")
+        return
+    meeting = Meeting(**_json.loads(json_path.read_text(encoding="utf-8")))
+    if meeting.kind != "meeting":
+        click.echo("retranscribe handles meetings; a journal goes through `process --kind journal`.")
+        return
+    opus = json_path.parent / (meeting.recording.opus_path or "recording.opus")
+    if not opus.exists():
+        click.echo(f"No recording at {opus}")
+        return
+
+    with tempfile.TemporaryDirectory(prefix="meetflow-rt-") as tmp:
+        wav = Path(tmp) / "recording.wav"
+        proc = subprocess.run(
+            ["ffmpeg", "-loglevel", "error", "-y", "-i", str(opus), "-ac", "2", "-ar", "16000", str(wav)],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            raise click.ClickException(f"ffmpeg failed: {proc.stderr[-300:]}")
+        click.echo("Transcribing...")
+        diarized = transcribe_stereo(wav, config.whisper)
+    for s in diarized:
+        s.text = apply_fixups(s.text, config.whisper.fixups, config.whisper.fixups_brand)
+
+    shutil.copy2(json_path, json_path.with_name("meeting.pre-retranscribe.json"))
+    meeting.transcript = [TranscriptSegment(speaker=s.speaker, start=s.start, end=s.end, text=s.text) for s in diarized]
+    _mark_gaps(meeting, diarized)
+    save_meeting_json(meeting, json_path.parent)
+    click.echo(f"{len(diarized)} segments" + (f", still {len(meeting.transcript_gaps)} gap(s)" if meeting.transcript_gaps else ", no gaps"))
+    ctx.invoke(redistill, meeting_id=meeting_id)
+
+
+def _mark_gaps(meeting, segments) -> None:
+    """Record the spans whisper never transcribed (a decoder loop that survived the re-decode), so
+    a short transcript can never pass for a complete one: tag + meeting.md warning + notification."""
+    from meetflow.transcribe.filters import LOOP_RETRY_RUN
+
+    meeting.transcript_gaps = [[round(s.start, 1), round(s.end, 1)] for s in segments if getattr(s, "looped", 0) >= LOOP_RETRY_RUN]
+    if meeting.transcript_gaps and "transcript-onvolledig" not in meeting.tags:
+        meeting.tags.append("transcript-onvolledig")
+    elif not meeting.transcript_gaps and "transcript-onvolledig" in meeting.tags:
+        meeting.tags.remove("transcript-onvolledig")
+
+
 @cli.command()
 @click.argument("meeting_id")
 @click.pass_context
@@ -530,12 +606,7 @@ def redistill(ctx: click.Context, meeting_id: str) -> None:
     from meetflow.storage.database import MeetingDB
     from meetflow.storage.files import save_journal_markdown, save_meeting_json, save_meeting_markdown
 
-    json_path = None
-    for sub in ("meetings", config.journal.dirname, f"meetings/{config.hygiene.quarantine_dirname}"):
-        cand = config.data_dir / sub / meeting_id / "meeting.json"
-        if cand.exists():
-            json_path = cand
-            break
+    json_path = _find_meeting_json(config, meeting_id)
     if json_path is None:
         click.echo(f"meeting.json not found for {meeting_id}")
         return
@@ -599,12 +670,7 @@ def classify(ctx: click.Context, meeting_id: str, venture: str | None, type_: st
     from meetflow.storage.database import MeetingDB
     from meetflow.storage.files import save_meeting_json
 
-    json_path = None
-    for sub in ("meetings", config.journal.dirname, f"meetings/{config.hygiene.quarantine_dirname}"):
-        cand = config.data_dir / sub / meeting_id / "meeting.json"
-        if cand.exists():
-            json_path = cand
-            break
+    json_path = _find_meeting_json(config, meeting_id)
     if json_path is None:
         click.echo(f"meeting.json not found for {meeting_id}")
         return

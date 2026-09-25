@@ -92,6 +92,8 @@ def _notify(title: str, message: str) -> None:
 
 
 def _notify_result(meeting, meeting_dir) -> None:
+    from meetflow.notify import gap_note
+
     if meeting is not None:
         dur = meeting.duration_seconds
         n_seg = len(meeting.transcript)
@@ -100,7 +102,7 @@ def _notify_result(meeting, meeting_dir) -> None:
         else:
             n_act = len(meeting.extraction.action_items.i_owe_them) + len(meeting.extraction.action_items.they_owe_me)
             label = "Meeting"
-            body = (meeting.extraction.summary or "")[:140] + (f"\n{n_act} actiepunten" if n_act else "")
+            body = (meeting.extraction.summary or "")[:140] + (f"\n{n_act} actiepunten" if n_act else "") + gap_note(meeting)
         _notify(f"{label} opgeslagen ({dur // 60}m {dur % 60}s, {n_seg} segmenten)", body)
     else:
         _notify("Opname opgeslagen", "Geen spraak gedetecteerd")

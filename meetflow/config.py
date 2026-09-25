@@ -78,10 +78,11 @@ class WhisperConfig:
     vad_min_speech_ms: int = 250
     vad_min_silence_ms: int = 100
     vad_speech_pad_ms: int = 200
-    # Anti-loop decode knobs. Defaults are OFF (emit no flag) so the meeting command line stays
-    # byte-identical; journal mode overrides them (max_context=0 stops the decoder carrying looped
-    # text between windows; entropy_thold makes the temperature fallback fire earlier on loops).
-    max_context: int = -1                 # whisper-cli -mc; -1 = model default → no flag emitted
+    # Anti-loop decode knobs. max_context=0 stops the decoder carrying looped text between VAD
+    # windows; meetings need it too (2026-09-24: an hour-long call looped one sentence 1530x and
+    # lost ~45 min of transcript). entropy_thold makes the temperature fallback fire earlier on
+    # loops; the engine sets it only when it re-decodes a window that still looped.
+    max_context: int = 0                  # whisper-cli -mc; -1 = model default → no flag emitted
     entropy_thold: float | None = None    # whisper-cli -et; None = model default → no flag emitted
     context_prompts: dict[str, str] = field(default_factory=lambda: {
         "nl": "Hé, even een update over het project. Kunnen we dat morgen bespreken?",

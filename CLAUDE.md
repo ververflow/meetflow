@@ -50,13 +50,17 @@ a derived view GROUPED PER VENTURE over flat storage. Re-tag: `meetflow classify
 - No-speech never strands orphan WAVs: meetings archive+quarantine, journals discard the silent clip.
 - The daemon runs the pipeline in a BACKGROUND THREAD, so the menubar stays live during processing
   and a toggle pressed mid-processing drains the stale command instead of firing a surprise record.
-- Anti-loop: `filters.collapse_repeated_segments` (deterministic backstop) + journal `max_context=0`
-  (without it the journal engine can loop one sentence many times).
+- Anti-loop, three layers: `max_context=0` for BOTH lanes (a meeting on the model default looped
+  one sentence 1530x and lost ~45 min, 2026-09-24); a window that still loops (>= `LOOP_RETRY_RUN`
+  copies) is re-decoded without the prompt and with `-et`; what survives is collapsed, marked
+  `looped`, and saved as `transcript_gaps` + tag `transcript-onvolledig` + a warning in meeting.md
+  and the notification. Never let a collapse pass silently: it hides untranscribed speech.
+  Repair a saved meeting from its opus with `meetflow retranscribe <id>`.
 - FTS has AFTER DELETE/UPDATE triggers, so search never desyncs on re-index.
 
 ## CLI + config
 
-CLI: `journal` (toggle a solo session), `redistill <id>`, `classify <id> …`, `process --kind
+CLI: `journal` (toggle a solo session), `redistill <id>`, `retranscribe <id>`, `classify <id> …`, `process --kind
 journal`, `index`, `classify`/`tag`, `doctor` (preflight), `backfill` (re-extract titles + repair
 old mojibake + reconcile slug). Config: `[journal]` (dirname, max_context), `venture_for`, whisper
 `fixups`/`fixups_brand`, `apply_vocab_ssot` (merges `~/.config/whisper/vocab.json` +

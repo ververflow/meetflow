@@ -26,7 +26,8 @@ feel: what a stranger could clone and run is here, what is true of this one Mac 
 > **Status:** live and in daily use. Two lanes: **meetings** (Ctrl+Alt+M, 2-channel mic+tap) and a
 > solo **journal / brainstorm** lane (Hyper+J, mic-only, `kind='journal'`, distilled + stored in
 > `~/journal`). Output is organized by venture/type (INDEX grouped per venture); a failed LLM step
-> keeps the transcript (`meetflow redistill <id>` to re-distil). Full current state is in `CLAUDE.md`
+> keeps the transcript (`meetflow redistill <id>` to re-distil); a transcript with holes is tagged
+> `transcript-onvolledig` (`meetflow retranscribe <id>`). Full current state is in `CLAUDE.md`
 > (the "Status" + "Capture lanes" sections). Records **two channels** for meetings — your mic
 > ("me") + the system audio via a CoreAudio process-tap ("them") — transcribes, extracts, and
 > archives, all locally and searchable. On speakers you'll hear a mild echo in the raw audio (the

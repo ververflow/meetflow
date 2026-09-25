@@ -82,3 +82,6 @@ class Meeting(BaseModel):
     recording: Recording = Field(default_factory=Recording)
     tags: list[str] = Field(default_factory=list)
     notes_user: str = ""
+    # [start, end] spans (s) where whisper looped even after a re-decode: speech there is missing
+    # from the transcript. Non-empty also tags the meeting 'transcript-onvolledig'.
+    transcript_gaps: list[list[float]] = Field(default_factory=list)

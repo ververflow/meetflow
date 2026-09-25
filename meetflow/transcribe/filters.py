@@ -115,6 +115,8 @@ def collapse_repeated_segments(segments: list) -> list:
             if run >= 3 or colliding:
                 first, last = segments[i], segments[j - 1]
                 first.end = max(getattr(first, "end", 0.0), getattr(last, "end", 0.0))
+                if hasattr(first, "looped"):
+                    first.looped = run  # the span is a stuck decoder, not speech: callers report it
                 kept.append(first)
                 log.info(
                     "collapsed %d looped segments @%.1fs: %r",
@@ -125,6 +127,29 @@ def collapse_repeated_segments(segments: list) -> list:
         kept.append(segments[i])
         i += 1
     return kept
+
+
+LOOP_RETRY_RUN = 20  # a run this long is a stuck decoder over real speech, not a "ja. ja." echo
+
+
+def find_loops(segments: list, min_run: int = LOOP_RETRY_RUN) -> list[tuple[float, float, int]]:
+    """Runs of >= min_run consecutive identical segments, as (start, end, run_length).
+
+    collapse_repeated_segments turns such a run into ONE segment stretched over its whole span,
+    which silently hides that the speech underneath was never transcribed (2026-09-24: 1530
+    copies of one sentence stood in for 29 minutes). Callers re-decode these windows first.
+    """
+    loops: list[tuple[float, float, int]] = []
+    i, n = 0, len(segments)
+    while i < n:
+        base = _norm(getattr(segments[i], "text", ""))
+        j = i + 1
+        while j < n and base and _norm(getattr(segments[j], "text", "")) == base:
+            j += 1
+        if j - i >= min_run:
+            loops.append((segments[i].start, max(s.end for s in segments[i:j]), j - i))
+        i = j
+    return loops
 
 
 def is_low_confidence(no_speech_prob: float, avg_logprob: float) -> bool:

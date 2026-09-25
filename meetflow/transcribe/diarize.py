@@ -23,6 +23,7 @@ class DiarizedSegment:
     end: float
     text: str
     language: str
+    looped: int = 0  # carried from engine.Segment: >0 = an untranscribed decoder-loop span
 
 
 def load_stereo_wav(wav_path: Path) -> tuple[np.ndarray, np.ndarray, int]:
@@ -153,11 +154,11 @@ def _transcribe_sequential(
     if mic_has:
         log.info("Transcribing mic channel (me)...")
         for seg in transcribe_audio(mic_audio, config):
-            results.append(DiarizedSegment(speaker="me", start=seg.start, end=seg.end, text=seg.text, language=seg.language))
+            results.append(DiarizedSegment(speaker="me", start=seg.start, end=seg.end, text=seg.text, language=seg.language, looped=seg.looped))
     if loop_has:
         log.info("Transcribing loopback channel (them)...")
         for seg in transcribe_audio(loopback_audio, config):
-            results.append(DiarizedSegment(speaker="them", start=seg.start, end=seg.end, text=seg.text, language=seg.language))
+            results.append(DiarizedSegment(speaker="them", start=seg.start, end=seg.end, text=seg.text, language=seg.language, looped=seg.looped))
     return results
 
 
@@ -178,7 +179,7 @@ def _transcribe_parallel(
         for f in as_completed(futures):
             speaker = futures[f]
             for seg in f.result():
-                results.append(DiarizedSegment(speaker=speaker, start=seg.start, end=seg.end, text=seg.text, language=seg.language))
+                results.append(DiarizedSegment(speaker=speaker, start=seg.start, end=seg.end, text=seg.text, language=seg.language, looped=seg.looped))
     return results
 
 
